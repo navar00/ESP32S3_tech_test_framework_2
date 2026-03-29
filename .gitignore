@@ -1,0 +1,26 @@
+# === Build artifacts ===
+.pio/
+build/
+compile_commands.json
+sdkconfig.esp32-s3-devkitc-1
+
+# === IDE / Editor ===
+.vscode/.browse.c_cpp.db*
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+.vscode/ipch
+
+# === Credentials (NEVER commit) ===
+src/core/Config.h
+
+# === Logs ===
+build_debug_log.txt
+upload_log.txt
+
+# === Backups ===
+_port_backup_*/
+
+# === OS ===
+.DS_Store
+Thumbs.db
+desktop.ini
