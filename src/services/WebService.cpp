@@ -1,5 +1,6 @@
 #include "WebService.h"
 #include <esp_mac.h>
+#include "../core/GOLConfig.h"
 
 // ─── Lifecycle ───────────────────────────────────────────────
 
@@ -22,6 +23,10 @@ void WebService::begin()
                { handleLogout(); });
     _server.on("/dashboard", HTTP_GET, [this]()
                { handleDashboard(); });
+    _server.on("/api/gol/config", HTTP_POST, [this]()
+               { handleGOLConfig(); });
+    _server.on("/api/gol/action", HTTP_POST, [this]()
+               { handleGOLAction(); });
     _server.on("/favicon.ico", HTTP_GET, [this]()
                { handleFavicon(); });
     _server.onNotFound([this]()
@@ -152,6 +157,65 @@ void WebService::handleNotFound()
     _server.send(404, "text/plain", "Not Found: " + uri);
 }
 
+// ─── GOL API Handlers ────────────────────────────────────────
+
+void WebService::handleGOLConfig()
+{
+    if (!isAuthenticated())
+    {
+        _server.send(401, "text/plain", "Unauthorized");
+        return;
+    }
+    if (_server.hasArg("speed") && _server.hasArg("alive") && _server.hasArg("dead"))
+    {
+        uint16_t speed = _server.arg("speed").toInt();
+        String aliveHex = _server.arg("alive");
+        String deadHex = _server.arg("dead");
+        auto hexTo565 = [](String hex) -> uint16_t
+        {
+            if (hex.startsWith("#"))
+                hex.remove(0, 1);
+            long rgb = strtol(hex.c_str(), NULL, 16);
+            int r = (rgb >> 16) & 0xFF;
+            int g = (rgb >> 8) & 0xFF;
+            int b = rgb & 0xFF;
+            return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+        };
+        GOLConfig::getInstance().updateConfig(hexTo565(aliveHex), hexTo565(deadHex), speed);
+        Logger::log((char *)"WebSrv", "GOL Config: Spd %d", speed);
+        _server.send(200, "application/json", "{\"success\":true}");
+    }
+    else
+    {
+        _server.send(400, "application/json", "{\"error\":\"Bad request\"}");
+    }
+}
+
+void WebService::handleGOLAction()
+{
+    if (!isAuthenticated())
+    {
+        _server.send(401, "text/plain", "Unauthorized");
+        return;
+    }
+    if (_server.hasArg("cmd"))
+    {
+        String cmd = _server.arg("cmd");
+        if (cmd == "toggle")
+            GOLConfig::getInstance().setRunning(!GOLConfig::getInstance().getState().isRunning);
+        else if (cmd == "reset")
+            GOLConfig::getInstance().triggerAction(true, false);
+        else if (cmd == "clear")
+            GOLConfig::getInstance().triggerAction(false, true);
+        Logger::log((char *)"WebSrv", "GOL Action %s", cmd.c_str());
+        _server.send(200, "application/json", "{\"success\":true}");
+    }
+    else
+    {
+        _server.send(400, "application/json", "{\"error\":\"Bad request\"}");
+    }
+}
+
 // ─── HTML Builders ───────────────────────────────────────────
 
 String WebService::buildLoginPage(const char *errorMsg)
@@ -210,29 +274,28 @@ button:hover{background:#444}
 
 String WebService::buildDashboardPage()
 {
-    // Gather system data
     char buf[64];
-    uint8_t mac[6];
-    esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    char macStr[18];
-    snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
-             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    uint8_t mac[6]; esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char macStr[18]; snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
-    String html = R"rawhtml(
-<!DOCTYPE html>
+    auto state = GOLConfig::getInstance().getState();
+    char hexA[8], hexD[8];
+    uint8_t aR = (state.colorAlive >> 11) << 3; uint8_t aG = ((state.colorAlive >> 5) & 0x3F) << 2; uint8_t aB = (state.colorAlive & 0x1F) << 3;
+    uint8_t dR = (state.colorDead >> 11) << 3; uint8_t dG = ((state.colorDead >> 5) & 0x3F) << 2; uint8_t dB = (state.colorDead & 0x1F) << 3;
+    snprintf(hexA, sizeof(hexA), "#%02x%02x%02x", aR, aG, aB);
+    snprintf(hexD, sizeof(hexD), "#%02x%02x%02x", dR, dG, dB);
+
+    String html = R"(<!DOCTYPE html>
 <html>
 <head>
 <meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
 <title>ESP32 Dashboard</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#f5f5f5;color:#222;font-family:-apple-system,system-ui,'Segoe UI',Roboto,sans-serif;
-     padding:24px;max-width:480px;margin:0 auto}
+body{background:#f5f5f5;color:#222;font-family:-apple-system,system-ui,'Segoe UI',Roboto,sans-serif;padding:24px;max-width:480px;margin:0 auto}
 h1{font-size:20px;font-weight:600;text-align:center;margin-bottom:20px;color:#111}
-.card{background:#fff;border-radius:10px;padding:16px 20px;margin-bottom:14px;
-      box-shadow:0 1px 4px rgba(0,0,0,.06)}
-.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#999;
-         margin-bottom:10px;font-weight:600}
+.card{background:#fff;border-radius:10px;padding:16px 20px;margin-bottom:14px;box-shadow:0 1px 4px rgba(0,0,0,.06)}
+.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#999;margin-bottom:10px;font-weight:600}
 table{width:100%;border-collapse:collapse}
 td{padding:6px 0;font-size:14px;border-bottom:1px solid #f0f0f0}
 tr:last-child td{border-bottom:none}
@@ -243,83 +306,82 @@ td:last-child{color:#222;text-align:right;font-weight:500;font-variant-numeric:t
 .foot{text-align:center;margin-top:20px;font-size:12px;color:#bbb}
 .foot a{color:#999;text-decoration:none;border-bottom:1px solid #ddd;padding-bottom:1px}
 .foot a:hover{color:#222;border-color:#222}
-.chip{display:inline-block;background:#e8f5e9;color:#2e7d32;font-size:11px;
-      padding:2px 8px;border-radius:10px;font-weight:500}
+.chip{display:inline-block;background:#e8f5e9;color:#2e7d32;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:500}
 .chip.off{background:#fbe9e7;color:#c62828}
+.tabs{display:flex;margin-bottom:14px;border-bottom:2px solid #ddd}
+.tab{flex:1;text-align:center;padding:10px;cursor:pointer;color:#888;font-weight:500;font-size:14px;transition:all .2s;border-bottom:2px solid transparent}
+.tab.active{color:#4a90d9;border-bottom-color:#4a90d9;margin-bottom:-2px}
+.tab-ctx{display:none}
+.tab-ctx.active{display:block}
+.btn{flex:1;padding:10px;border:none;border-radius:4px;cursor:pointer;font-weight:600}
+.inp-lbl{display:block;margin-bottom:5px;font-size:13px;color:#666}
 </style>
+<script>
+function shTab(id, e){
+    document.querySelectorAll('.tab-ctx').forEach(el=>el.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(el=>el.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    e.target.classList.add('active');
+}
+function upGol(){
+    fetch('/api/gol/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'speed='+document.getElementById('spd').value+'&alive='+encodeURIComponent(document.getElementById('ca').value)+'&dead='+encodeURIComponent(document.getElementById('cd').value)});
+}
+function axGol(c){
+    fetch('/api/gol/action',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'cmd='+c});
+}
+function updVal(val){ document.getElementById("s_val").innerText = val; }
+</script>
 </head>
 <body>
-<h1>System Monitor</h1>
-)rawhtml";
+<h1>ESP32 Control</h1>
+<div class='tabs'>
+    <div class='tab active' onclick='shTab("t_sys", event)'>System</div>
+    <div class='tab' onclick='shTab("t_gol", event)'>Game of Life</div>
+</div>
+<div id='t_sys' class='tab-ctx active'>
+)";
 
-    // ─── SYSTEM Section ───
     html += "<div class='card'><h2>System</h2><table>";
-
-    // Uptime
-    unsigned long uptimeSec = millis() / 1000;
-    unsigned long h = uptimeSec / 3600;
-    unsigned long m = (uptimeSec % 3600) / 60;
-    unsigned long s = uptimeSec % 60;
-    snprintf(buf, sizeof(buf), "%luh %lum %lus", h, m, s);
+    unsigned long up = millis() / 1000;
+    snprintf(buf, sizeof(buf), "%luh %lum %lus", up / 3600, (up % 3600) / 60, up % 60);
     html += "<tr><td>Uptime</td><td>" + String(buf) + "</td></tr>";
+    html += "<tr><td>CPU</td><td>" + String(ESP.getCpuFreqMHz()) + " MHz</td></tr>";
+    html += "<tr><td>Temperature</td><td>" + String(temperatureRead(), 1) + " &deg;C</td></tr>";
+    html += "<tr><td>SDK</td><td>" + String(ESP.getSdkVersion()) + "</td></tr></table></div>";
 
-    // CPU
-    snprintf(buf, sizeof(buf), "%d MHz", ESP.getCpuFreqMHz());
-    html += "<tr><td>CPU</td><td>" + String(buf) + "</td></tr>";
-
-    // Temp
-    snprintf(buf, sizeof(buf), "%.1f &deg;C", temperatureRead());
-    html += "<tr><td>Temperature</td><td>" + String(buf) + "</td></tr>";
-
-    // SDK
-    html += "<tr><td>SDK</td><td>" + String(ESP.getSdkVersion()) + "</td></tr>";
-
-    html += "</table></div>";
-
-    // ─── MEMORY Section ───
     html += "<div class='card'><h2>Memory</h2><table>";
+    uint32_t fh = ESP.getFreeHeap(); uint32_t th = ESP.getHeapSize();
+    html += "<tr><td>Free Heap</td><td>" + String(fh/1024) + " / " + String(th/1024) + " KB</td></tr>";
+    html += "<tr><td>Flash</td><td>" + String(ESP.getFlashChipSize() / (1024*1024)) + " MB</td></tr>";
+    html += "</table><div class='bar-track'><div class='bar-fill' style='width:" + String((fh*100)/th) + "%'></div></div></div>";
 
-    uint32_t freeHeap = ESP.getFreeHeap();
-    uint32_t totalHeap = ESP.getHeapSize();
-    int heapPct = totalHeap > 0 ? (freeHeap * 100 / totalHeap) : 0;
-
-    snprintf(buf, sizeof(buf), "%u / %u KB", freeHeap / 1024, totalHeap / 1024);
-    html += "<tr><td>Free Heap</td><td>" + String(buf) + "</td></tr>";
-
-    snprintf(buf, sizeof(buf), "%u KB", ESP.getMaxAllocHeap() / 1024);
-    html += "<tr><td>Max Block</td><td>" + String(buf) + "</td></tr>";
-
-    snprintf(buf, sizeof(buf), "%u KB", ESP.getMinFreeHeap() / 1024);
-    html += "<tr><td>Min Free</td><td>" + String(buf) + "</td></tr>";
-
-    snprintf(buf, sizeof(buf), "%u MB", ESP.getFlashChipSize() / (1024 * 1024));
-    html += "<tr><td>Flash</td><td>" + String(buf) + "</td></tr>";
-
-    // Heap usage bar
-    html += "</table><div class='bar-track'><div class='bar-fill' style='width:" + String(heapPct) + "%'></div></div></div>";
-
-    // ─── NETWORK Section ───
     html += "<div class='card'><h2>Network</h2><table>";
-
-    if (WiFi.status() == WL_CONNECTED)
-    {
-        html += "<tr><td>Status</td><td><span class='chip'>Connected</span></td></tr>";
-        html += "<tr><td>SSID</td><td>" + WiFi.SSID() + "</td></tr>";
+    if(WiFi.status() == WL_CONNECTED){
+        html += "<tr><td>Status</td><td><span class='chip'>Conn</span></td></tr>";
+        html += "<tr><td>SSID</td><td>" + WiFi.SSID() + " (" + String(WiFi.RSSI()) + "dBm)</td></tr>";
         html += "<tr><td>IP</td><td>" + WiFi.localIP().toString() + "</td></tr>";
         html += "<tr><td>MAC</td><td>" + String(macStr) + "</td></tr>";
-        snprintf(buf, sizeof(buf), "%d dBm", WiFi.RSSI());
-        html += "<tr><td>RSSI</td><td>" + String(buf) + "</td></tr>";
+    }else{
+         html += "<tr><td>Status</td><td><span class='chip off'>Offline</span></td></tr>";
     }
-    else
-    {
-        html += "<tr><td>Status</td><td><span class='chip off'>Offline</span></td></tr>";
-    }
+    html += "</table></div></div>";
 
-    html += "</table></div>";
+    html += "<div id='t_gol' class='tab-ctx'><div class='card'><h2>Screen Config</h2>";
+    html += "<div style='margin-bottom:15px'><label class='inp-lbl'>Speed (<span id='s_val'>" + String(state.cycleSpeedMs) + "</span>ms)</label>";
+    html += "<input type='range' id='spd' min='10' max='1000' value='" + String(state.cycleSpeedMs) + "' onchange='upGol()' oninput='updVal(this.value)' style='width:100%'></div>";
+    
+    html += "<div style='display:flex;gap:10px;margin-bottom:20px'>";
+    html += "<div style='flex:1'><label class='inp-lbl'>Alive Color</label><input type='color' id='ca' value='" + String(hexA) + "' onchange='upGol()' style='width:100%;height:40px;border:none;padding:0'></div>";
+    html += "<div style='flex:1'><label class='inp-lbl'>Dead Color</label><input type='color' id='cd' value='" + String(hexD) + "' onchange='upGol()' style='width:100%;height:40px;border:none;padding:0'></div></div>";
+    
+    html += "<div style='display:flex;gap:10px'>";
+    html += "<button class='btn' style='background:#f0f0f0;color:#222' onclick='axGol(\"toggle\")'>Play/Pause</button>";
+    html += "<button class='btn' style='background:#e3f2fd;color:#1565c0' onclick='axGol(\"reset\")'>Random</button>";
+    html += "<button class='btn' style='background:#ffebee;color:#c62828' onclick='axGol(\"clear\")'>Clear</button>";
+    html += "</div></div></div>";
 
-    // Footer
-    html += "<p class='foot'>ESP32-S3 &middot; <a href='/logout'>Sign out</a></p>";
+    html += R"(<p class='foot'>ESP32-S3 &middot; <a href='/logout'>Sign out</a></p></body></html>)";
 
-    html += "</body></html>";
     return html;
 }

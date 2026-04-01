@@ -103,6 +103,11 @@ El compilador es la primera línea de defensa.
     *   **Flash API**: Prohibida la escritura directa en particiones de sistema o NVS sin usar las APIs de abstracción (`Preferences` o `LittleFS`).
     *   **PSRAM**: No asumir que existe. Usar `psramFound()` antes de `ps_malloc`.
 
+4.  **Backend - Frontend Web UI**:
+    *   **Desacoplamiento Estricto**: Las pantallas TFT (`IScreen`) NO conocen el servidor web. Leen estados desde un Contexto Compartido en la capa de Servicios o Core.
+    *   **Mutaciones Asíncronas**: Los parámetros desde la UI Web se mandan vía API REST en formato JSON (ej. `fetch('/api/config', {method: 'POST'})`). Nunca forzar recargas completas (SPA de facto).
+    *   **Resiliencia Cliente**: Todo el JavaScript servido al cliente debe manejar reconexiones o tokens expirados (401) guiando suavemente al login de nuevo.
+
 ---
 
 ## 5. MEMORIA TÉCNICA
@@ -221,3 +226,32 @@ Este proyecto distingue tres modos conceptuales de operación:
 **Regla de Oro**: Ninguna feature que toque **Concurrencia (Tasks), BLE o Gestión de Memoria** puede pasar a Implementación sin haber sido validada en Modo Diseño.
 
 
+
+## 10. PATRONES WEB Y CONCURRENCIA (NUEVO)
+Basado en la integración del Web Dashboard (SPA) y The Game of Life:
+
+1. **Web UI como SPA (Single Page Application)**:
+   * **Prohibido el refresco de página**: Las acciones desde la web hacia el dispositivo (ej. cambiar colores, botones) deben hacerse obligatoriamente mediante peticiones asíncronas (etch()) a endpoints REST (ej. /api/gol/action).
+   * **Ventaja**: Evita parpadeos en el teléfono del usuario, ahorra memoria y ancho de banda en el ESP32, y separa la lógica de presentación HTML del estado del backend.
+
+2. **Compartición de Estado Seguro (Thread-Safety)**:
+   * La comunicación entre el servidor Web asíncrono (AsyncWebServer) y el hilo principal del TFT (loop()) DEBE realizarse a través de **Singletons de Estado**.
+   * Es **OBLIGATORIO** usar portMUX_TYPE y bloqueos críticos (portENTER_CRITICAL(&_mux)) al leer o transmutar variables compartidas para evitar corrupción de memoria (Race Conditions).
+
+3. **Optimización Extrema de RAM en Pantallas (Graceful Degradation)**:
+   * Las matrices grandes (como la del autómata celular) no deben usar arrays estáticos de bytes (uint8_t grid[320*240]). Para mitigar el temido Alloc 16bpp Failed, se DEBEN usar **estructuras Bitwise** (1 celda = 1 bit de RAM), reduciendo el peso de la memoria dinámica de la pantalla en casi un 88%.
+
+
+## 10. PATRONES WEB Y CONCURRENCIA
+Basado en la integracion del Web Dashboard (SPA) y The Game of Life:
+
+1. **Web UI como SPA (Single Page Application)**:
+   * **Prohibido el refresco de pagina**: Las acciones desde la web hacia el dispositivo (ej. cambiar colores, botones) deben hacerse obligatoriamente mediante peticiones asincronas (etch()) a endpoints REST (ej. /api/gol/action).
+   * **Ventaja**: Evita parpadeos en el telefono del usuario, ahorra ancho de banda en el ESP32, y separa la logica de presentacion HTML del estado real del backend en C++.
+
+2. **Comparticion de Estado Seguro (Thread-Safety)**:
+   * La comunicacion cruzada entre el AsyncWebServer y el hilo principal del TFT (loop()) DEBE realizarse a traves de **Singletons Compartidos**.
+   * Es **OBLIGATORIO** usar portENTER_CRITICAL al leer/escribir variables compartidas para evitar corrupcion de memoria.
+
+3. **Optimizacion Extrema de RAM (Graceful Degradation)**:
+   * Las matrices gigantes en pantalla NO DEBEN usar variables enteras o chars, sino arreglos de bits (1 uint8_t = 8 celdas de pantalla) para no aplastar el heap del PSRAM.

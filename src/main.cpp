@@ -8,6 +8,7 @@
 
 // Includes for Screens
 #include "screens/ScreenStatus.h"
+#include "screens/ScreenGameOfLife.h"
 #include "screens/ScreenGamepad.h"
 #include "screens/ScreenAnalogClock.h"
 #include "screens/ScreenFlipClock.h"
@@ -61,6 +62,7 @@ void setup()
     // it inits on first use or via add().
 
     ScreenManager::getInstance().add(new ScreenStatus());
+    ScreenManager::getInstance().add(new ScreenGameOfLife());
     // DESACTIVADO BLE: No cargamos el Gamepad monitor
     // ScreenManager::getInstance().add(new ScreenGamepad());
     ScreenManager::getInstance().add(new ScreenAnalogClock());

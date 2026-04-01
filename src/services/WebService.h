@@ -52,6 +52,10 @@ private:
     void handleFavicon();
     void handleNotFound();
 
+    // --- GOL API Handlers ---
+    void handleGOLConfig();
+    void handleGOLAction();
+
     // --- Helpers ---
     bool isAuthenticated();
     String buildLoginPage(const char *errorMsg = nullptr);

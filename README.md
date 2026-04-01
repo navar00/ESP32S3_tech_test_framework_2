@@ -21,10 +21,11 @@ El sistema abandona el tradicional "Spaghetti Code" de Arduino en favor de una a
     *   `TimeService`: Singleton NTP con sincronización automática (`pool.ntp.org`, `time.nist.gov`). Expone `getTimeParts()`, `getDateParts()`, countdown hasta resync.
     *   `NetService`: Gestión WiFi con reconexión automática.
     *   `GeoService`: Geolocalización por IP para offset de zona horaria.
-    *   `WebService`: Servidor HTTP (puerto 80) con PIN aleatorio de 4 dígitos, sesión por cookie, dashboard de sistema.
+    *   `WebService`: Servidor HTTP (puerto 80) con PIN aleatorio de 4 dígitos, sesión por cookie. Sirve un Dashboard web multi-pestaña (System Info + Control TFT) y provee una API asíncrona (`/api/...`).
 4.  **Capa Presentación**: (`/src/screens`)
     *   Implementaciones concretas de la interfaz `IScreen` (`Strategy Pattern`).
     *   `ScreenStatus`: Monitor de Sistema — Info del sistema, memoria (tabla 2 columnas) y red (SSID+RSSI/IP/MAC/Web URL+PIN) - *[Activo]*.
+    *   `ScreenGameOfLife`: Autómata celular (Conway's Game of Life). Control remoto asíncrono desde el Web Dashboard (colores, velocidad, reset). Gestión avanzada de memoria con doble grid de bits (Graceful Degradation) - *[Activo]*.
     *   `ScreenAnalogClock`: Reloj analógico (mitad izq.) + Calendario mensual con caja roja en día actual (mitad der.) - *[Activo]*.
     *   `ScreenFlipClock`: Reloj estilo "flip clock" con dígitos 7-segmentos custom via `fillRect`. HH:MM en paneles grandes, `:SS` y countdown NTP en footer - *[Activo]*.
     *   `BootConsoleScreen`: Pantalla de arranque con barra vertical de progreso (izq.) y log incremental (der.) - *[Boot]*.
