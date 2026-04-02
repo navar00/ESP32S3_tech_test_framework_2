@@ -71,4 +71,14 @@ public:
     }
 
     IScreen *getCurrent() { return currentScreen; }
+
+    IScreen *getScreenByName(String name)
+    {
+        for (IScreen *s : screens)
+        {
+            if (String(s->getName()) == name)
+                return s;
+        }
+        return nullptr;
+    }
 };

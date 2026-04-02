@@ -1,4 +1,4 @@
-# DIRECTRICES DE INGENIERÍA & GOBIERNO DEL CÓDIGO
+﻿# DIRECTRICES DE INGENIERÍA & GOBIERNO DEL CÓDIGO
 > **Estatus**: OBLIGATORIO
 > **Propósito**: Definir el estándar de calidad para la colaboración Humano-IA.
 
@@ -108,6 +108,14 @@ El compilador es la primera línea de defensa.
     *   **Mutaciones Asíncronas**: Los parámetros desde la UI Web se mandan vía API REST en formato JSON (ej. `fetch('/api/config', {method: 'POST'})`). Nunca forzar recargas completas (SPA de facto).
     *   **Resiliencia Cliente**: Todo el JavaScript servido al cliente debe manejar reconexiones o tokens expirados (401) guiando suavemente al login de nuevo.
 
+5.  **Transferencia HTTP (TCP Buffer Constraints)**:
+    *   **Límite Duro**: La ventana TCP del ESP32-S3 es de **~5744 bytes**. Cualquier respuesta HTTP cuyo cuerpo supere este tamaño será truncada silenciosamente por `WiFiClient::write()` (flag `MSG_DONTWAIT`).
+    *   **Regla de Oro**: Todo recurso servido vía `send()` o `send_P()` debe ser **< 5 KB** de payload. Si es mayor, usar el **patrón WiFiClient con Backpressure** (ver README §6.12).
+    *   **Chunked Transfer Encoding PROHIBIDO**: `sendContent()` realiza 3 writes internos por chunk (size line + data + CRLF). Si cualquiera falla parcialmente, el stream chunked entero se corrompe → `ERR_INVALID_CHUNKED_ENCODING`. No usar nunca `CONTENT_LENGTH_UNKNOWN` con `sendContent()`.
+    *   **Concurrencia INEXISTENTE**: El `WebServer` nativo es **single-threaded**. Solo puede procesar una petición TCP a la vez. Peticiones concurrentes → `ERR_CONNECTION_RESET`. El JS del cliente DEBE encadenar `fetch()` secuencialmente con `.then()`.
+    *   **Patrón Split-Payload**: Para dashboards con HTML+JS+CSS, dividir en archivos PROGMEM independientes (ej. `DASH_HTML` + `DASH_JS`), cada uno bajo 5KB, cargados secuencialmente por el navegador (`<script src='/d.js'>`).
+    *   **Patrón WiFiClient Backpressure**: Para payloads > 5KB (ej. JSON de paletas de 27KB), enviar cabeceras con `Content-Length` exacto vía `_server.send(200, type, "")`, luego iterar con `client.write()` en chunks de 256 bytes con reintentos (`delay(5)` entre fallos, máximo 50 reintentos por chunk). Llamar `yield()` entre chunks para no disparar el WDT.
+
 ---
 
 ## 5. MEMORIA TÉCNICA
@@ -128,8 +136,18 @@ Los siguientes patrones han demostrado ser problemáticos en este proyecto:
 *   **Crear Sprites en el constructor**:
     *   → Fragmenta heap y rompe el ciclo de vida `onEnter`/`onExit`.
 *   **Re-inicializar el stack BLE en runtime**:
-    *   → Provoca panics difíciles de reproducir. Preferir mantener el stack vivo si hay memoria.*   **Matar tareas BLE con `vTaskDelete` mientras operan**:
+    *   → Provoca panics difíciles de reproducir. Preferir mantener el stack vivo si hay memoria.
+*   **Matar tareas BLE con `vTaskDelete` mientras operan**:
     *   → Causa `LoadProhibited` Panics. Usar `disconnect()` + Self-Terminate.
+*   **`_server.send()` con payloads > 5KB**:
+    *   → `WiFiClient::write()` usa `MSG_DONTWAIT` y descarta bytes silenciosamente cuando el buffer TCP está lleno (~5744 bytes). Resultado: `ERR_CONTENT_LENGTH_MISMATCH` en el navegador. Usar **Split-Payload Pattern** o **WiFiClient Backpressure**.
+*   **Chunked Transfer Encoding (`sendContent()`) en ESP32 WebServer**:
+    *   → `sendContent()` hace 3 writes internos por chunk. Fallos parciales corrompen la trama chunked → `ERR_INVALID_CHUNKED_ENCODING`. Usar `Content-Length` exacto + stream manual.
+*   **`fetch()` paralelos contra ESP32 WebServer**:
+    *   → El WebServer es single-threaded. Solo procesa 1 conexión TCP a la vez. Peticiones concurrentes obtienen `ERR_CONNECTION_RESET`. Encadenar con `.then()` en JS.
+*   **Escribir headers HTTP crudos directamente al `WiFiClient`**:
+    *   → `client.print("HTTP/1.1 200 OK\r\n...")` conflicta con el estado interno del `WebServer`, que ya ha procesado la request line y headers del cliente. Resultado: `errno 104, Connection reset by peer`. Usar siempre `_server.send(code, type, "")` para headers y luego `client.write()` solo para el body.
+
 Antes de proponer una solución, **comprobar que no encaja en esta lista**.
 
 ---
@@ -227,31 +245,70 @@ Este proyecto distingue tres modos conceptuales de operación:
 
 
 
-## 10. PATRONES WEB Y CONCURRENCIA (NUEVO)
-Basado en la integración del Web Dashboard (SPA) y The Game of Life:
-
-1. **Web UI como SPA (Single Page Application)**:
-   * **Prohibido el refresco de página**: Las acciones desde la web hacia el dispositivo (ej. cambiar colores, botones) deben hacerse obligatoriamente mediante peticiones asíncronas (etch()) a endpoints REST (ej. /api/gol/action).
-   * **Ventaja**: Evita parpadeos en el teléfono del usuario, ahorra memoria y ancho de banda en el ESP32, y separa la lógica de presentación HTML del estado del backend.
-
-2. **Compartición de Estado Seguro (Thread-Safety)**:
-   * La comunicación entre el servidor Web asíncrono (AsyncWebServer) y el hilo principal del TFT (loop()) DEBE realizarse a través de **Singletons de Estado**.
-   * Es **OBLIGATORIO** usar portMUX_TYPE y bloqueos críticos (portENTER_CRITICAL(&_mux)) al leer o transmutar variables compartidas para evitar corrupción de memoria (Race Conditions).
-
-3. **Optimización Extrema de RAM en Pantallas (Graceful Degradation)**:
-   * Las matrices grandes (como la del autómata celular) no deben usar arrays estáticos de bytes (uint8_t grid[320*240]). Para mitigar el temido Alloc 16bpp Failed, se DEBEN usar **estructuras Bitwise** (1 celda = 1 bit de RAM), reduciendo el peso de la memoria dinámica de la pantalla en casi un 88%.
-
-
 ## 10. PATRONES WEB Y CONCURRENCIA
-Basado en la integracion del Web Dashboard (SPA) y The Game of Life:
+Basado en la integración del Web Dashboard (Shell + AJAX) y The Game of Life:
 
-1. **Web UI como SPA (Single Page Application)**:
-   * **Prohibido el refresco de pagina**: Las acciones desde la web hacia el dispositivo (ej. cambiar colores, botones) deben hacerse obligatoriamente mediante peticiones asincronas (etch()) a endpoints REST (ej. /api/gol/action).
-   * **Ventaja**: Evita parpadeos en el telefono del usuario, ahorra ancho de banda en el ESP32, y separa la logica de presentacion HTML del estado real del backend en C++.
+### 10.1 Arquitectura Web: Shell + AJAX (NO monolítica)
+*   **Prohibido generar HTML dinámico grande**: El ESP32 WebServer nativo es single-threaded y tiene un buffer TCP de ~5744 bytes. Cualquier respuesta mayor se corrompe silenciosamente.
+*   **Patrón obligatorio**: Servir un HTML shell estático pequeño (< 5KB PROGMEM) que carga datos via `fetch()` a endpoints REST JSON.
+*   **Ventaja**: Evita parpadeos, ahorra memoria y ancho de banda, y separa la presentación HTML del estado del backend C++.
+*   **Renderizado client-side**: Toda lógica de presentación (ej. previews visuales, cálculos de porcentajes, formateo) debe hacerse en JavaScript con los datos ya cargados. **No crear endpoints adicionales** si la información ya está disponible en el cliente. Ejemplo: el preview de colores de paletas se renderiza a partir del JSON de `/api/palettes` sin peticiones extra.
 
-2. **Comparticion de Estado Seguro (Thread-Safety)**:
-   * La comunicacion cruzada entre el AsyncWebServer y el hilo principal del TFT (loop()) DEBE realizarse a traves de **Singletons Compartidos**.
-   * Es **OBLIGATORIO** usar portENTER_CRITICAL al leer/escribir variables compartidas para evitar corrupcion de memoria.
+### 10.2 Transferencia HTTP en ESP32 WebServer
+*   **Split-Payload Pattern**: Si el contenido estático total supera 5KB, dividir en múltiples recursos (ej. `/dashboard` → HTML + `/d.js` → JavaScript), cada uno < 5KB.
+*   **WiFiClient Backpressure Pattern**: Para payloads > 5KB (ej. JSON de paletas de 27KB), enviar headers con `_server.send(200, type, "")` y luego hacer stream del body con `client.write()` en chunks de 256 bytes con retry loop + `yield()`.
+*   **Prohibido**: Chunked Transfer Encoding (`sendContent()`), `send()`/`send_P()` con payloads > 5KB, headers HTTP manuales vía `client.print()`.
 
-3. **Optimizacion Extrema de RAM (Graceful Degradation)**:
-   * Las matrices gigantes en pantalla NO DEBEN usar variables enteras o chars, sino arreglos de bits (1 uint8_t = 8 celdas de pantalla) para no aplastar el heap del PSRAM.
+### 10.3 Concurrencia JS → ESP32
+*   **Prohibido `fetch()` paralelos**: El WebServer solo procesa 1 conexión TCP a la vez. Múltiples peticiones simultáneas causan `ERR_CONNECTION_RESET`.
+*   **Patrón obligatorio**: Encadenar con `.then()` → `lS().then(function(){return lG()}).then(function(){return lP()})`.
+
+### 10.4 Compartición de Estado Seguro (Thread-Safety)
+*   La comunicación entre el WebServer y el hilo principal del TFT (`loop()`) DEBE realizarse a través de **Singletons de Estado**.
+*   Es **OBLIGATORIO** usar `portMUX_TYPE` y bloqueos críticos (`portENTER_CRITICAL(&_mux)`) al leer o mutar variables compartidas para evitar corrupción de memoria (Race Conditions).
+
+### 10.5 Optimización Extrema de RAM en Pantallas (Graceful Degradation)
+*   Las matrices grandes (como la del autómata celular) no deben usar arrays estáticos de bytes (`uint8_t grid[320*240]`). Para mitigar el temido `Alloc 16bpp Failed`, se DEBEN usar **estructuras Bitwise** (1 celda = 1 bit de RAM), reduciendo el consumo de memoria dinámica en ~88%.
+
+---
+
+## 11. SCRIPTS AUXILIARES (`aux_/`)
+
+La carpeta `aux_/` contiene scripts de desarrollo creados durante sesiones de debugging y refactoring (sufijo `_` por compatibilidad con OneDrive, que reserva el nombre `aux`). **No participan en la compilación** y pueden borrarse sin impactar al proyecto. Se conservan como herramientas reutilizables y como registro histórico de las decisiones tomadas.
+
+### 11.1 Scripts Python — Parcheo y Refactoring de WebService.cpp
+
+| Script | Propósito | Uso |
+|--------|-----------|-----|
+| `fix_all.py` | Parche combinado: reemplaza `sendContent()` chunked por `send()` directo en dashboard, y reescribe `handlePalettesGet()` con streaming chunked de 1KB desde PROGMEM. | `python aux_/fix_all.py` |
+| `fix_dashboard.py` | Parche quirúrgico: convierte `send(200, "text/html", buildDashboardPage())` a chunked con `sendContent()` (512 bytes). *Enfoque descartado* — ver anti-patterns en §5.3. | `python aux_/fix_dashboard.py` |
+| `fix_js.py` | Reemplaza el bloque `<script>...</script>` completo dentro del HTML del dashboard por una versión con funciones de paletas (`initPal`, `updPalList`, `setPal`). | `python aux_/fix_js.py` |
+| `patch.py` | Inyecta la pestaña "Palettes" en el dashboard monolítico: tab HTML, selectores `<select>` y funciones JS inline. | `python aux_/patch.py` |
+| `refactor_dashboard.py` | **Refactoring mayor**: reemplaza el dashboard monolítico por la arquitectura Shell + AJAX. Elimina `buildDashboardPage()`, inyecta `DASHBOARD_HTML` PROGMEM, añade `handleSystemInfo()` y `handleGOLStateGet()`. | `python aux_/refactor_dashboard.py` |
+
+### 11.2 Scripts Python — Diagnóstico y Testing
+
+| Script | Propósito | Uso |
+|--------|-----------|-----|
+| `read_test.py` | Lee `WebService.cpp` y busca la función `buildDashboardPage` para imprimir un snippet de contexto alrededor. Útil para verificar si un parche se aplicó correctamente. | `python aux_/read_test.py` |
+| `test_com.py` | Abre el puerto serie COM4 (115200 baud) con reset RTS y muestra la salida del ESP32 en tiempo real. Alternativa rápida al monitor de PlatformIO. | `python aux_/test_com.py` (requiere `pyserial`) |
+
+### 11.3 Scripts PowerShell — Parches de WebService
+
+| Script | Propósito | Uso |
+|--------|-----------|-----|
+| `patch_webservice.ps1` | Inyecta las rutas `/api/palettes` y `/api/palettes/set` antes de `/favicon.ico` en `setup()`, y añade el `#include` de `PalettesData.h`. | `.\aux_\patch_webservice.ps1` |
+| `patch_webservice2.ps1` | Limpieza: corrige artefactos de doble backtick-n introducidos por el escape de PowerShell en el parche anterior. | `.\aux_\patch_webservice2.ps1` |
+
+### 11.4 Scripts de Pipeline de Paletas (`include/colores/`)
+Estos scripts **NO están en `aux_/`** porque forman parte del pipeline de generación de datos del proyecto:
+
+| Script | Propósito | Uso |
+|--------|-----------|-----|
+| `extract_colors.py` | Extrae paletas de colores (16 colores) de imágenes `.png`/`.jpg` usando Pillow. Genera JSON por carpeta de artista. | `python include/colores/extract_colors.py` |
+| `aggregate_palettes.py` | Combina todos los JSON individuales en `master_palettes.json`. | `python include/colores/aggregate_palettes.py` |
+| `export_cpp_palettes.py` | Convierte `master_palettes.json` → `src/core/PalettesData.h` (PROGMEM `PALETTES_JSON[]`). | `python include/colores/export_cpp_palettes.py` |
+| `simulador_paleta.py` | Visualizador tkinter: simula cómo se verá una paleta en la pantalla TFT del ESP32 (320×240 grid). | `python include/colores/simulador_paleta.py [carpeta] [paleta]` |
+
+> **Nota**: El pipeline completo para regenerar paletas es:
+> `extract_colors.py` → `aggregate_palettes.py` → `export_cpp_palettes.py` → compilar.

@@ -21,7 +21,7 @@ El sistema abandona el tradicional "Spaghetti Code" de Arduino en favor de una a
     *   `TimeService`: Singleton NTP con sincronización automática (`pool.ntp.org`, `time.nist.gov`). Expone `getTimeParts()`, `getDateParts()`, countdown hasta resync.
     *   `NetService`: Gestión WiFi con reconexión automática.
     *   `GeoService`: Geolocalización por IP para offset de zona horaria.
-    *   `WebService`: Servidor HTTP (puerto 80) con PIN aleatorio de 4 dígitos, sesión por cookie. Sirve un Dashboard web multi-pestaña (System Info + Control TFT) y provee una API asíncrona (`/api/...`).
+    *   `WebService`: Servidor HTTP (puerto 80) con PIN aleatorio de 4 dígitos, sesión por cookie. Arquitectura **Shell + AJAX**: sirve un HTML estático mínimo desde PROGMEM (`<3.4KB`) y carga datos dinámicos secuencialmente vía API REST (`/api/...`). Dashboard multi-pestaña (System Info, Game of Life Control, Palette Selector con preview visual de colores ranqueados por frecuencia).
 4.  **Capa Presentación**: (`/src/screens`)
     *   Implementaciones concretas de la interfaz `IScreen` (`Strategy Pattern`).
     *   `ScreenStatus`: Monitor de Sistema — Info del sistema, memoria (tabla 2 columnas) y red (SSID+RSSI/IP/MAC/Web URL+PIN) - *[Activo]*.
@@ -337,12 +337,14 @@ Se ratifica el uso de `display.clear()` + Redraw completo como estrategia válid
 *   **Secuencia**: Init Hardware (10%) → WiFi Connect (30%) → GeoIP Lookup (60%) → NTP Sync (80%) → Web Server (90%) → Ready (100%).
 
 ### 6.11 Servidor Web Embebido (WebService)
-Servidor HTTP ligero en puerto 80 que permite monitorizar el sistema desde cualquier dispositivo en la misma red WiFi.
+Servidor HTTP ligero en puerto 80 que permite monitorizar y controlar el sistema desde cualquier dispositivo en la misma red WiFi.
 
-**Arquitectura:**
+**Arquitectura — Shell + AJAX (Split-Payload Pattern):**
 *   **Singleton** (`WebService::getInstance()`) inicializado durante el boot, tras la conexión WiFi.
 *   Usa `WebServer` nativo del ESP32 (no requiere librerías externas).
 *   `handleClient()` invocado en cada iteración del `loop()` principal.
+*   **Diseño Split-Payload**: El dashboard se sirve en **dos respuestas PROGMEM separadas** (`DASH_HTML` ~3.3KB + `DASH_JS` ~4.9KB), cada una por debajo de la ventana TCP del ESP32 (~5744 bytes). El HTML referencia `<script src='/d.js'>` para que el navegador haga una segunda petición independiente.
+*   **Carga secuencial de datos**: El JS ejecuta las peticiones API en cadena (`lS().then(lG).then(lP)`) en lugar de en paralelo, porque el `WebServer` nativo del ESP32 es **single-threaded** y solo puede atender una conexión TCP simultánea.
 
 **Seguridad:**
 *   **PIN de 4 dígitos** generado con `esp_random()` en cada arranque. Visible en la pantalla TFT (`ScreenStatus`) y en los logs de boot.
@@ -351,23 +353,133 @@ Servidor HTTP ligero en puerto 80 que permite monitorizar el sistema desde cualq
 *   **Ruta `/logout`**: Borra la cookie y redirige al login.
 
 **Rutas:**
-| Ruta | Método | Protegida | Descripción |
-| :--- | :--- | :--- | :--- |
-| `/` | GET | No | Login (o redirect a dashboard si autenticado) |
-| `/login` | POST | No | Validación del PIN |
-| `/dashboard` | GET | Sí | Dashboard con info de System, Memory y Network |
-| `/logout` | GET | No | Cierra sesión (borra cookie) |
-| `/favicon.ico` | GET | No | Icono 1×1px verde (cache 7 días) |
+| Ruta | Método | Protegida | Descripción | Tamaño |
+| :--- | :--- | :--- | :--- | :--- |
+| `/` | GET | No | Login (o redirect a dashboard si autenticado) | ~1.5KB |
+| `/login` | POST | No | Validación del PIN | — |
+| `/dashboard` | GET | Sí | Shell HTML estático (CSS + estructura DOM + preview container) | ~3.3KB PROGMEM |
+| `/d.js` | GET | Sí | JavaScript del dashboard (lógica AJAX + color preview) | ~4.9KB PROGMEM |
+| `/api/system` | GET | Sí | JSON: uptime, CPU, temp, SDK, heap, network | ~350B dinámico |
+| `/api/gol/state` | GET | Sí | JSON: velocidad, colores alive/dead (hex) | ~80B dinámico |
+| `/api/gol/config` | POST | Sí | Configura velocidad y colores del GOL | — |
+| `/api/gol/action` | POST | Sí | Acciones: toggle, reset, clear | — |
+| `/api/palettes` | GET | Sí | JSON con todas las paletas disponibles | ~27KB PROGMEM (WiFiClient stream) |
+| `/api/palettes/set` | POST | Sí | Aplica una paleta (folder + nombre) | — |
+| `/logout` | GET | No | Cierra sesión (borra cookie) | — |
+| `/favicon.ico` | GET | No | Icono 1×1px verde (cache 7 días) | 62B |
 
 **UI Web:**
 *   Diseño **minimal y responsive**: fondo claro, tarjetas blancas con sombra sutil, fuente del sistema.
 *   **Login**: Tarjeta centrada con campo PIN numérico, botón oscuro, mensaje de error inline.
-*   **Dashboard**: 3 tarjetas (System, Memory, Network) con barra visual de uso de heap, chip semántico de estado de conexión (verde/rojo).
+*   **Dashboard**: 3 pestañas (System, Game of Life, Palettes) con contenido cargado dinámicamente vía AJAX.
+    *   **System**: Uptime, CPU, temperatura, SDK, memoria (con barra de heap), red (SSID, RSSI, IP, MAC).
+    *   **Game of Life**: Slider de velocidad, color pickers (alive/dead), botones Play/Pause, Random, Clear.
+    *   **Palettes**: Selectores jerárquicos Folder → Palette con **preview visual de colores**: al seleccionar una paleta se muestran barras horizontales con cada color, código hex y porcentaje de frecuencia de aparición (ranqueado de mayor a menor). Botón Apply.
 *   **Logging descriptivo**: Todas las peticiones 404 se logean con método, URI e IP del cliente.
+
+### 6.12 Lecciones de HTTP en ESP32 (TCP Buffer Constraints)
+Durante el desarrollo del WebService se descubrió un **límite crítico del hardware** que condicionó toda la arquitectura web.
+
+**El Problema — `ERR_CONTENT_LENGTH_MISMATCH`:**
+El `WebServer` nativo del ESP32 llama internamente a `WiFiClient::write()` con el flag `MSG_DONTWAIT` (non-blocking). Si el payload excede la **ventana TCP del socket** (~5744 bytes en ESP32-S3), `write()` devuelve un **short write** (menos bytes de los enviados). El WebServer **ignora el valor de retorno**, por lo que los bytes restantes se pierden silenciosamente. El navegador recibe un `Content-Length: 8000` en la cabecera pero solo llega ~5700 bytes de cuerpo, generando `net::ERR_CONTENT_LENGTH_MISMATCH`.
+
+**Intentos Fallidos (Registro de Batalla):**
+| Intento | Resultado | Por qué falló |
+| :--- | :--- | :--- |
+| `_server.send(200, "text/html", page)` | `ERR_CONTENT_LENGTH_MISMATCH` | Payload de 8218 bytes > ventana TCP de 5744 bytes. Short write silencioso. |
+| Chunked Transfer (`sendContent()` en loop) | `ERR_INVALID_CHUNKED_ENCODING` | `sendContent()` hace 3 writes internos por chunk (size line + data + CRLF). Si cualquiera falla parcialmente, el stream chunked se corrompe. |
+| Raw `WiFiClient::write()` con headers manuales | `Connection reset by peer` (errno 104) | Escribir `HTTP/1.1 200 OK\r\n` directamente al `WiFiClient` conflicta con el estado interno del `WebServer`, que ya ha procesado la request. |
+| `WiFiClient::write()` con `setContentLength` | `Connection reset by peer` (errno 104) | El `WiFiClient` obtenido vía `_server.client()` comparte el socket con el `WebServer`. Escribir directamente causa conflicto de estado. |
+| `send_P()` con PROGMEM grande | `ERR_CONTENT_LENGTH_MISMATCH` | `send_P` internamente usa el mismo `write()` non-blocking sin reintentos. |
+
+**Solución Final — Split-Payload Pattern:**
+Dividir todo payload en **archivos PROGMEM independientes**, cada uno menor que la ventana TCP (~5744 bytes):
+*   `DASH_HTML` (~3344 bytes) → servido vía `send_P()` ✅
+*   `DASH_JS` (~4902 bytes) → servido vía `send_P()` ✅
+*   `PALETTES_JSON` (27116 bytes) → servido vía `WiFiClient::write()` con **backpressure retry loop** (256 bytes/chunk, hasta 50 reintentos con `delay(5)` entre cada uno) ✅
+
+**Patrón WiFiClient con Backpressure (para payloads > 5KB):**
+```cpp
+_server.setContentLength(len);          // Cabecera Content-Length exacta
+_server.sendHeader("Connection", "close");
+_server.send(200, "application/json", ""); // Solo headers
+
+WiFiClient client = _server.client();
+char buf[256];
+size_t pos = 0;
+while (pos < len && client.connected()) {
+    size_t toSend = min(len - pos, (size_t)256);
+    memcpy_P(buf, DATA + pos, toSend);
+    size_t sent = 0;
+    uint8_t retries = 0;
+    while (sent < toSend && client.connected() && retries < 50) {
+        int w = client.write((const uint8_t*)(buf + sent), toSend - sent);
+        if (w > 0) { sent += w; retries = 0; }
+        else       { retries++; delay(5); }
+    }
+    pos += sent;
+    yield();
+}
+```
+
+**Problema Adicional — Conexiones Simultáneas:**
+El `WebServer` del ESP32 es **single-threaded** (procesa una request, responde, luego acepta la siguiente). Si el navegador dispara 3 `fetch()` en paralelo (como `lS(); lG(); lP();`), solo la primera se procesa; las otras dos obtienen `ERR_CONNECTION_RESET` porque el servidor las rechaza.
+
+**Solución**: Encadenar las peticiones secuencialmente en JavaScript:
+```javascript
+// ❌ MAL: Paralelo — 2 de 3 fallarán en ESP32
+lS(); lG(); lP();
+
+// ✅ BIEN: Secuencial — cada petición espera a la anterior
+lS().then(function(){ return lG() }).then(function(){ return lP() });
+```
 
 ---
 
 ## 7. Changelog
+
+### v0.6.0 — 2026-04-02
+**Refactorización Completa del Web Dashboard (Shell + AJAX):**
+
+El dashboard monolítico HTML (~8KB en una sola respuesta) fue reemplazado por una arquitectura **Split-Payload + AJAX** para superar las limitaciones del buffer TCP del ESP32.
+
+**Nuevas Rutas API:**
+*   `/d.js` — JavaScript del dashboard servido como recurso PROGMEM independiente.
+*   `/api/system` — JSON con información de sistema (uptime, CPU, temp, heap, red).
+*   `/api/gol/state` — JSON con estado actual del Game of Life (velocidad, colores).
+*   `/api/palettes` — JSON completo (~27KB) servido con WiFiClient backpressure retry.
+*   `/api/palettes/set` — POST para aplicar una paleta al TFT.
+
+**Arquitectura:**
+*   HTML estático `DASH_HTML` (~3.3KB, PROGMEM) + JS `DASH_JS` (~4.9KB, PROGMEM) → ambos bajo la ventana TCP de 5744 bytes.
+*   Carga de datos secuencial (`lS().then(lG).then(lP)`) para respetar la naturaleza single-threaded del WebServer.
+*   `PALETTES_JSON` (27KB) transferido con loop de backpressure (`WiFiClient::write` + retry + `delay(5)`).
+
+**Dashboard UI (3 pestañas):**
+*   **System**: Uptime, CPU, temperatura, SDK, memoria con barra visual, info de red con chip de estado.
+*   **Game of Life**: Slider velocidad, color pickers (alive/dead), botones control (Play/Pause, Random, Clear).
+*   **Palettes**: Selectores jerárquicos Folder → Palette con preview de colores, botón Apply.
+
+### v0.6.1 — 2026-04-02
+**Preview Visual de Paletas en Web Dashboard:**
+
+*   Al seleccionar una paleta en la pestaña Palettes, se muestra un **preview visual** con los colores que la componen, ranqueados por frecuencia de aparición en el muestreo de la imagen original.
+*   Cada color se representa como una **barra horizontal** proporcional a su porcentaje de frecuencia, acompañada del **código hex** y el **porcentaje**.
+*   El preview se actualiza en tiempo real al cambiar Folder o Palette — sin peticiones HTTP adicionales (renderizado client-side con los datos ya cargados de `/api/palettes`).
+*   Contenedor `#pPrev` con cabecera dinámica que muestra el número de colores de la paleta.
+*   CSS: clases `.sw` (fila), `.sb` (barra de color), `.sh` (hex monospace), `.sl` (porcentaje).
+*   **Tamaños PROGMEM actualizados**: `DASH_HTML` 2.9→3.3KB, `DASH_JS` 4.1→4.9KB. Ambos bajo el límite TCP de 5744 bytes.
+
+**Reorganización de Scripts Auxiliares:**
+*   Movidos 9 scripts de desarrollo (`.py` + `.ps1`) de la raíz del proyecto a la nueva carpeta `aux_/` (sufijo `_` por compatibilidad con OneDrive).
+*   Documentados en DevGuidelines.md §11 (propósito, uso y clasificación de cada script).
+
+**Bugs Resueltos:**
+*   Fix: `ERR_CONTENT_LENGTH_MISMATCH` — payload HTML de 8218 bytes excedía la ventana TCP (5744 bytes).
+*   Fix: `ERR_INVALID_CHUNKED_ENCODING` — `sendContent()` corrupts chunked stream on partial writes.
+*   Fix: `ERR_CONNECTION_RESET` — fetch() paralelos rechazados por WebServer single-threaded.
+*   Fix: `sT is not defined` — el `<script>` se ubicaba al final del HTML truncado, nunca llegaba al navegador.
+*   Fix: `Connection reset by peer (errno 104)` — raw WiFiClient writes conflictan con el estado interno del WebServer.
 
 ### v0.5.0 — 2026-03-29
 **Nuevo: Servidor Web Embebido (`WebService`):**

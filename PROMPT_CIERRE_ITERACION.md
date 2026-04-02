@@ -81,3 +81,29 @@ Devuelve:
    ✅ ITERACIÓN CERRADA
    o
    ❌ ITERACIÓN NO APTA (y por qué)
+
+---
+
+### 6) PUSH A GITHUB (Post-Cierre)
+Si la iteración está cerrada (`✅ ITERACIÓN CERRADA`):
+
+1.  **Verificar** que `.gitignore` excluye logs y artefactos de build.
+2.  **Stage** todos los cambios relevantes:
+    ```bash
+    git add -A
+    ```
+3.  **Commit** con mensaje descriptivo siguiendo el formato:
+    ```
+    feat|fix|docs|refactor(scope): descripción breve
+
+    - Cambio 1
+    - Cambio 2
+    ```
+4.  **Push** a `origin main`:
+    ```bash
+    git push origin main
+    ```
+5.  **Confirmar** que el push fue exitoso (exit code 0, sin errores de autenticación o conflictos).
+
+Si el push falla:
+→ Diagnosticar (credenciales, conflictos, rama protegida) y resolver antes de cerrar.

@@ -15,7 +15,9 @@ src/core/Config.h
 
 # === Logs ===
 build_debug_log.txt
+build.log
 upload_log.txt
+pio_monitor.log
 
 # === Backups ===
 _port_backup_*/

@@ -1,0 +1,40 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "read file",
+			"type": "shell",
+			"command": "python c:\\Users\\egavi\\OneDrive\\Documents\\PlatformIO\\Projects\\ESP32S3_tech_test_framework_2\\read_test.py",
+			"isBackground": false
+		},
+		{
+			"label": "git status",
+			"type": "shell",
+			"command": "git status",
+			"isBackground": false
+		},
+		{
+			"label": "git checkout",
+			"type": "shell",
+			"command": "git checkout src/services/WebService.cpp",
+			"isBackground": false
+		},
+		{
+			"label": "read test",
+			"type": "shell",
+			"command": "python c:\\Users\\egavi\\OneDrive\\Documents\\PlatformIO\\Projects\\ESP32S3_tech_test_framework_2\\read_test.py",
+			"isBackground": false
+		},
+		{
+			"label": "dump",
+			"type": "shell",
+			"command": "python -c \"import sys; f=open(r'c:\\Users\\egavi\\OneDrive\\Documents\\PlatformIO\\Projects\\ESP32S3_tech_test_framework_2\\src\\services\\WebService.cpp', 'r', encoding='utf-8'); content = f.read(); idx = content.find('buildDashboardPage'); with open('func.txt', 'w', encoding='utf-8') as out: out.write(content[idx:idx+4000])\"",
+			"isBackground": false
+		},
+		{
+			"label": "Build Tech Test 2",
+			"type": "shell",
+			"command": "platformio run --environment esp32-s3-devkitc-1"
+		}
+	]
+}

@@ -1,6 +1,10 @@
 #include "WebService.h"
 #include <esp_mac.h>
+#include <ArduinoJson.h>
 #include "../core/GOLConfig.h"
+#include "../core/ScreenManager.h"
+#include "../screens/ScreenPalette.h"
+#include "../core/PalettesData.h"
 
 // ─── Lifecycle ───────────────────────────────────────────────
 
@@ -23,10 +27,20 @@ void WebService::begin()
                { handleLogout(); });
     _server.on("/dashboard", HTTP_GET, [this]()
                { handleDashboard(); });
+    _server.on("/d.js", HTTP_GET, [this]()
+               { handleDashboardJS(); });
+    _server.on("/api/system", HTTP_GET, [this]()
+               { handleSystemInfo(); });
+    _server.on("/api/gol/state", HTTP_GET, [this]()
+               { handleGOLStateGet(); });
     _server.on("/api/gol/config", HTTP_POST, [this]()
                { handleGOLConfig(); });
     _server.on("/api/gol/action", HTTP_POST, [this]()
                { handleGOLAction(); });
+    _server.on("/api/palettes", HTTP_GET, [this]()
+               { handlePalettesGet(); });
+    _server.on("/api/palettes/set", HTTP_POST, [this]()
+               { handlePaletteSet(); });
     _server.on("/favicon.ico", HTTP_GET, [this]()
                { handleFavicon(); });
     _server.onNotFound([this]()
@@ -113,6 +127,69 @@ void WebService::handleLogin()
     _server.send(200, "text/html", buildLoginPage());
 }
 
+// ─── Dashboard HTML (~3.2 KB, well under TCP window) ─────────
+static const char DASH_HTML[] PROGMEM = R"rawhtml(<!DOCTYPE html>
+<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>ESP32 Dashboard</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#f5f5f5;color:#222;font-family:-apple-system,system-ui,'Segoe UI',Roboto,sans-serif;padding:24px;max-width:480px;margin:0 auto}
+h1{font-size:20px;font-weight:600;text-align:center;margin-bottom:20px;color:#111}
+.c{background:#fff;border-radius:10px;padding:16px 20px;margin-bottom:14px;box-shadow:0 1px 4px rgba(0,0,0,.06)}
+.c h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#999;margin-bottom:10px;font-weight:600}
+table{width:100%;border-collapse:collapse}
+td{padding:6px 0;font-size:14px;border-bottom:1px solid #f0f0f0}
+tr:last-child td{border-bottom:none}
+td:first-child{color:#888;width:40%}
+td:last-child{color:#222;text-align:right;font-weight:500}
+.bt{height:4px;background:#eee;border-radius:2px;margin-top:10px;overflow:hidden}
+.bf{height:100%;background:#4a90d9;border-radius:2px}
+.ft{text-align:center;margin-top:20px;font-size:12px;color:#bbb}
+.ft a{color:#999;text-decoration:none}
+.ch{display:inline-block;background:#e8f5e9;color:#2e7d32;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:500}
+.ch.off{background:#fbe9e7;color:#c62828}
+.tabs{display:flex;margin-bottom:14px;border-bottom:2px solid #ddd}
+.tab{flex:1;text-align:center;padding:10px;cursor:pointer;color:#888;font-weight:500;font-size:14px;border-bottom:2px solid transparent}
+.tab.active{color:#4a90d9;border-bottom-color:#4a90d9;margin-bottom:-2px}
+.tc{display:none}.tc.active{display:block}
+.btn{padding:10px;border:none;border-radius:4px;cursor:pointer;font-weight:600}
+.il{display:block;margin-bottom:5px;font-size:13px;color:#666}
+.sw{display:flex;align-items:center;margin-bottom:6px}.sb{height:28px;border-radius:4px;min-width:20px}.sl{font-size:11px;color:#888;margin-left:8px;white-space:nowrap}.sh{font-size:11px;color:#555;font-family:monospace;margin-left:8px}
+</style></head><body>
+<h1>ESP32 Control</h1>
+<div class='tabs'>
+<div class='tab active' onclick='sT("t_sys",this)'>System</div>
+<div class='tab' onclick='sT("t_gol",this)'>Game of Life</div>
+<div class='tab' onclick='sT("t_pal",this)'>Palettes</div>
+</div>
+<div id='t_sys' class='tc active'><p style='text-align:center;color:#aaa'>Loading&#8230;</p></div>
+<div id='t_gol' class='tc'><p style='text-align:center;color:#aaa'>Loading&#8230;</p></div>
+<div id='t_pal' class='tc'>
+<div class='c'><h2>Palette Config</h2>
+<div style='margin-bottom:15px'><label class='il'>Folder</label>
+<select id='pF' style='width:100%;padding:8px;border-radius:4px;border:1px solid #ccc'><option>Loading...</option></select></div>
+<div style='margin-bottom:15px'><label class='il'>Palette</label>
+<select id='pN' style='width:100%;padding:8px;border-radius:4px;border:1px solid #ccc'></select></div>
+<button class='btn' style='background:#4a90d9;color:#fff;width:100%' onclick='sP()'>Apply Palette</button>
+</div>
+<div class='c' id='pPrev'><h2>Preview</h2><p style='color:#aaa;font-size:13px'>Select a palette to preview colors</p></div></div>
+<p class='ft'>ESP32-S3 &middot; <a href='/logout'>Sign out</a></p>
+<script src='/d.js'></script>
+</body></html>)rawhtml";
+
+// ─── Dashboard JS (~4.8 KB, sequential fetch + palette preview) ─────
+static const char DASH_JS[] PROGMEM = R"rawjs(function sT(id,el){document.querySelectorAll('.tc').forEach(function(e){e.classList.remove('active')});document.querySelectorAll('.tab').forEach(function(e){e.classList.remove('active')});var t=document.getElementById(id);if(t)t.classList.add('active');if(el)el.classList.add('active')}
+function lS(){return fetch('/api/system').then(function(r){return r.json()}).then(function(d){var h='<div class="c"><h2>System</h2><table>';h+='<tr><td>Uptime</td><td>'+d.up+'</td></tr>';h+='<tr><td>CPU</td><td>'+d.cpu+' MHz</td></tr>';h+='<tr><td>Temp</td><td>'+d.temp+' C</td></tr>';h+='<tr><td>SDK</td><td>'+d.sdk+'</td></tr>';h+='</table></div>';h+='<div class="c"><h2>Memory</h2><table>';h+='<tr><td>Heap</td><td>'+d.fh+'/'+d.th+' KB</td></tr>';h+='<tr><td>Flash</td><td>'+d.fl+' MB</td></tr>';h+='</table><div class="bt"><div class="bf" style="width:'+d.hp+'%"></div></div></div>';h+='<div class="c"><h2>Network</h2><table>';if(d.wf){h+='<tr><td>Status</td><td><span class="ch">Conn</span></td></tr>';h+='<tr><td>SSID</td><td>'+d.ss+' ('+d.rs+'dBm)</td></tr>';h+='<tr><td>IP</td><td>'+d.ip+'</td></tr>';h+='<tr><td>MAC</td><td>'+d.mc+'</td></tr>'}else{h+='<tr><td>Status</td><td><span class="ch off">Off</span></td></tr>'}h+='</table></div>';document.getElementById('t_sys').innerHTML=h}).catch(function(e){document.getElementById('t_sys').innerHTML='<p>Error: '+e.message+'</p>'})}
+function lG(){return fetch('/api/gol/state').then(function(r){return r.json()}).then(function(d){var h='<div class="c"><h2>Screen Config</h2>';h+='<div style="margin-bottom:15px"><label class="il">Speed (<span id="sv">'+d.sp+'</span>ms)</label>';h+='<input type="range" id="spd" min="10" max="1000" value="'+d.sp+'" onchange="uG()" oninput="document.getElementById(\'sv\').innerText=this.value" style="width:100%"></div>';h+='<div style="display:flex;gap:10px;margin-bottom:20px">';h+='<div style="flex:1"><label class="il">Alive</label><input type="color" id="ca" value="'+d.ac+'" onchange="uG()" style="width:100%;height:40px;border:none;padding:0"></div>';h+='<div style="flex:1"><label class="il">Dead</label><input type="color" id="cd" value="'+d.dc+'" onchange="uG()" style="width:100%;height:40px;border:none;padding:0"></div></div>';h+='<div style="display:flex;gap:10px">';h+='<button class="btn" style="background:#f0f0f0;color:#222;flex:1" onclick="aG(\'toggle\')">Play/Pause</button>';h+='<button class="btn" style="background:#e3f2fd;color:#1565c0;flex:1" onclick="aG(\'reset\')">Random</button>';h+='<button class="btn" style="background:#ffebee;color:#c62828;flex:1" onclick="aG(\'clear\')">Clear</button>';h+='</div></div>';document.getElementById('t_gol').innerHTML=h}).catch(function(e){document.getElementById('t_gol').innerHTML='<p>Error: '+e.message+'</p>'})}
+function uG(){fetch('/api/gol/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'speed='+document.getElementById('spd').value+'&alive='+encodeURIComponent(document.getElementById('ca').value)+'&dead='+encodeURIComponent(document.getElementById('cd').value)})}
+function aG(c){fetch('/api/gol/action',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'cmd='+c})}
+var PD={};function lP(){return fetch('/api/palettes').then(function(r){return r.json()}).then(function(d){PD=d;var f=document.getElementById('pF');f.innerHTML='';var k=Object.keys(d).sort();for(var i=0;i<k.length;i++){f.innerHTML+='<option value="'+k[i]+'">'+k[i]+'</option>'}uPL()}).catch(function(e){document.getElementById('pF').innerHTML='<option>Error</option>'})}
+function uPL(){var f=document.getElementById('pF');if(!f)return;var v=f.value,p=document.getElementById('pN');p.innerHTML='';if(PD[v]){var k=Object.keys(PD[v]).sort();for(var i=0;i<k.length;i++){p.innerHTML+='<option value="'+k[i]+'">'+k[i]+'</option>'}}shPv()}
+function shPv(){var fv=document.getElementById('pF').value,pv=document.getElementById('pN').value,box=document.getElementById('pPrev');if(!PD[fv]||!PD[fv][pv]){box.innerHTML='<h2>Preview</h2><p style="color:#aaa;font-size:13px">No data</p>';return}var cl=PD[fv][pv],tot=0;for(var i=0;i<cl.length;i++)tot+=cl[i].frequency;var h='<h2>Preview &middot; '+cl.length+' colors</h2>';for(var i=0;i<cl.length;i++){var c=cl[i],pc=tot>0?(c.frequency*100/tot).toFixed(1):'?';h+='<div class="sw"><div class="sb" style="background:'+c.hex+';width:'+Math.max(pc*2.5,8)+'%"></div><span class="sh">'+c.hex+'</span><span class="sl">'+pc+'%</span></div>'}box.innerHTML=h}
+function sP(){fetch('/api/palettes/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder:document.getElementById('pF').value,palette:document.getElementById('pN').value})})}
+document.getElementById('pF').onchange=uPL;document.getElementById('pN').onchange=shPv;
+lS().then(function(){return lG()}).then(function(){return lP()});)rawjs";
+
 void WebService::handleDashboard()
 {
     if (!isAuthenticated())
@@ -121,7 +198,18 @@ void WebService::handleDashboard()
         _server.send(302, "text/plain", "Auth required");
         return;
     }
-    _server.send(200, "text/html", buildDashboardPage());
+    _server.send_P(200, "text/html", DASH_HTML, strlen_P(DASH_HTML));
+}
+
+void WebService::handleDashboardJS()
+{
+    if (!isAuthenticated())
+    {
+        _server.send(401, "text/plain", "Unauthorized");
+        return;
+    }
+    _server.sendHeader("Cache-Control", "no-cache");
+    _server.send_P(200, "application/javascript", DASH_JS, strlen_P(DASH_JS));
 }
 
 void WebService::handleLogout()
@@ -215,7 +303,156 @@ void WebService::handleGOLAction()
         _server.send(400, "application/json", "{\"error\":\"Bad request\"}");
     }
 }
+// ─── System API ──────────────────────────────────────────────
 
+void WebService::handleSystemInfo()
+{
+    if (!isAuthenticated())
+    {
+        _server.send(401, "text/plain", "Unauthorized");
+        return;
+    }
+
+    unsigned long up = millis() / 1000;
+    char upBuf[32];
+    snprintf(upBuf, sizeof(upBuf), "%luh %lum %lus", up / 3600, (up % 3600) / 60, up % 60);
+
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char macStr[18];
+    snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    uint32_t fh = ESP.getFreeHeap() / 1024;
+    uint32_t th = ESP.getHeapSize() / 1024;
+    uint32_t hp = (ESP.getFreeHeap() * 100) / ESP.getHeapSize();
+
+    DynamicJsonDocument doc(384);
+    doc["up"] = upBuf;
+    doc["cpu"] = ESP.getCpuFreqMHz();
+    doc["temp"] = String(temperatureRead(), 1);
+    doc["sdk"] = ESP.getSdkVersion();
+    doc["fh"] = fh;
+    doc["th"] = th;
+    doc["fl"] = ESP.getFlashChipSize() / (1024 * 1024);
+    doc["hp"] = hp;
+    doc["wf"] = (WiFi.status() == WL_CONNECTED);
+    if (WiFi.status() == WL_CONNECTED)
+    {
+        doc["ss"] = WiFi.SSID();
+        doc["rs"] = WiFi.RSSI();
+        doc["ip"] = WiFi.localIP().toString();
+        doc["mc"] = macStr;
+    }
+
+    String json;
+    serializeJson(doc, json);
+    _server.send(200, "application/json", json);
+}
+
+void WebService::handleGOLStateGet()
+{
+    if (!isAuthenticated())
+    {
+        _server.send(401, "text/plain", "Unauthorized");
+        return;
+    }
+
+    auto state = GOLConfig::getInstance().getState();
+
+    uint8_t aR = (state.colorAlive >> 11) << 3;
+    uint8_t aG = ((state.colorAlive >> 5) & 0x3F) << 2;
+    uint8_t aB = (state.colorAlive & 0x1F) << 3;
+    uint8_t dR = (state.colorDead >> 11) << 3;
+    uint8_t dG = ((state.colorDead >> 5) & 0x3F) << 2;
+    uint8_t dB = (state.colorDead & 0x1F) << 3;
+
+    char hexA[8], hexD[8];
+    snprintf(hexA, sizeof(hexA), "#%02x%02x%02x", aR, aG, aB);
+    snprintf(hexD, sizeof(hexD), "#%02x%02x%02x", dR, dG, dB);
+
+    DynamicJsonDocument doc(128);
+    doc["sp"] = state.cycleSpeedMs;
+    doc["ac"] = hexA;
+    doc["dc"] = hexD;
+
+    String json;
+    serializeJson(doc, json);
+    _server.send(200, "application/json", json);
+}
+
+// ─── Palettes API Handlers ───────────────────────────────────────────────────
+
+void WebService::handlePalettesGet()
+{
+    if (!isAuthenticated())
+    {
+        _server.send(401, "text/plain", "Unauthorized");
+        return;
+    }
+
+    size_t len = strlen_P(PALETTES_JSON);
+
+    // Send headers with exact Content-Length, then stream body
+    _server.setContentLength(len);
+    _server.sendHeader("Connection", "close");
+    _server.send(200, "application/json", "");
+
+    WiFiClient client = _server.client();
+    const size_t BUF_SZ = 256;
+    char buf[BUF_SZ];
+    size_t pos = 0;
+
+    while (pos < len && client.connected())
+    {
+        size_t toSend = ((len - pos) < BUF_SZ) ? (len - pos) : BUF_SZ;
+        memcpy_P(buf, PALETTES_JSON + pos, toSend);
+
+        size_t sent = 0;
+        uint8_t retries = 0;
+        while (sent < toSend && client.connected() && retries < 50)
+        {
+            int w = client.write((const uint8_t *)(buf + sent), toSend - sent);
+            if (w > 0)
+            {
+                sent += w;
+                retries = 0;
+            }
+            else
+            {
+                retries++;
+                delay(5);
+            }
+        }
+        pos += sent;
+        yield();
+    }
+}
+
+void WebService::handlePaletteSet()
+{
+    if (!isAuthenticated())
+    {
+        _server.send(401, "text/plain", "Unauthorized");
+        return;
+    }
+    if (_server.hasArg("plain"))
+    {
+        DynamicJsonDocument doc(256);
+        deserializeJson(doc, _server.arg("plain"));
+        String folder = doc["folder"];
+        String palette = doc["palette"];
+
+        ScreenPalette *sp = (ScreenPalette *)ScreenManager::getInstance().getScreenByName("Palette");
+        if (sp)
+        {
+            sp->setPalette(folder, palette);
+            _server.send(200, "application/json", "{\"success\":true}");
+            return;
+        }
+    }
+    _server.send(400, "application/json", "{\"error\":\"Bad request\"}");
+}
 // ─── HTML Builders ───────────────────────────────────────────
 
 String WebService::buildLoginPage(const char *errorMsg)
@@ -268,120 +505,6 @@ button:hover{background:#444}
 </body>
 </html>
 )rawhtml";
-
-    return html;
-}
-
-String WebService::buildDashboardPage()
-{
-    char buf[64];
-    uint8_t mac[6]; esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    char macStr[18]; snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-
-    auto state = GOLConfig::getInstance().getState();
-    char hexA[8], hexD[8];
-    uint8_t aR = (state.colorAlive >> 11) << 3; uint8_t aG = ((state.colorAlive >> 5) & 0x3F) << 2; uint8_t aB = (state.colorAlive & 0x1F) << 3;
-    uint8_t dR = (state.colorDead >> 11) << 3; uint8_t dG = ((state.colorDead >> 5) & 0x3F) << 2; uint8_t dB = (state.colorDead & 0x1F) << 3;
-    snprintf(hexA, sizeof(hexA), "#%02x%02x%02x", aR, aG, aB);
-    snprintf(hexD, sizeof(hexD), "#%02x%02x%02x", dR, dG, dB);
-
-    String html = R"(<!DOCTYPE html>
-<html>
-<head>
-<meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
-<title>ESP32 Dashboard</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:#f5f5f5;color:#222;font-family:-apple-system,system-ui,'Segoe UI',Roboto,sans-serif;padding:24px;max-width:480px;margin:0 auto}
-h1{font-size:20px;font-weight:600;text-align:center;margin-bottom:20px;color:#111}
-.card{background:#fff;border-radius:10px;padding:16px 20px;margin-bottom:14px;box-shadow:0 1px 4px rgba(0,0,0,.06)}
-.card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#999;margin-bottom:10px;font-weight:600}
-table{width:100%;border-collapse:collapse}
-td{padding:6px 0;font-size:14px;border-bottom:1px solid #f0f0f0}
-tr:last-child td{border-bottom:none}
-td:first-child{color:#888;width:40%}
-td:last-child{color:#222;text-align:right;font-weight:500;font-variant-numeric:tabular-nums}
-.bar-track{height:4px;background:#eee;border-radius:2px;margin-top:10px;overflow:hidden}
-.bar-fill{height:100%;background:#4a90d9;border-radius:2px}
-.foot{text-align:center;margin-top:20px;font-size:12px;color:#bbb}
-.foot a{color:#999;text-decoration:none;border-bottom:1px solid #ddd;padding-bottom:1px}
-.foot a:hover{color:#222;border-color:#222}
-.chip{display:inline-block;background:#e8f5e9;color:#2e7d32;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:500}
-.chip.off{background:#fbe9e7;color:#c62828}
-.tabs{display:flex;margin-bottom:14px;border-bottom:2px solid #ddd}
-.tab{flex:1;text-align:center;padding:10px;cursor:pointer;color:#888;font-weight:500;font-size:14px;transition:all .2s;border-bottom:2px solid transparent}
-.tab.active{color:#4a90d9;border-bottom-color:#4a90d9;margin-bottom:-2px}
-.tab-ctx{display:none}
-.tab-ctx.active{display:block}
-.btn{flex:1;padding:10px;border:none;border-radius:4px;cursor:pointer;font-weight:600}
-.inp-lbl{display:block;margin-bottom:5px;font-size:13px;color:#666}
-</style>
-<script>
-function shTab(id, e){
-    document.querySelectorAll('.tab-ctx').forEach(el=>el.classList.remove('active'));
-    document.querySelectorAll('.tab').forEach(el=>el.classList.remove('active'));
-    document.getElementById(id).classList.add('active');
-    e.target.classList.add('active');
-}
-function upGol(){
-    fetch('/api/gol/config',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
-    body:'speed='+document.getElementById('spd').value+'&alive='+encodeURIComponent(document.getElementById('ca').value)+'&dead='+encodeURIComponent(document.getElementById('cd').value)});
-}
-function axGol(c){
-    fetch('/api/gol/action',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'cmd='+c});
-}
-function updVal(val){ document.getElementById("s_val").innerText = val; }
-</script>
-</head>
-<body>
-<h1>ESP32 Control</h1>
-<div class='tabs'>
-    <div class='tab active' onclick='shTab("t_sys", event)'>System</div>
-    <div class='tab' onclick='shTab("t_gol", event)'>Game of Life</div>
-</div>
-<div id='t_sys' class='tab-ctx active'>
-)";
-
-    html += "<div class='card'><h2>System</h2><table>";
-    unsigned long up = millis() / 1000;
-    snprintf(buf, sizeof(buf), "%luh %lum %lus", up / 3600, (up % 3600) / 60, up % 60);
-    html += "<tr><td>Uptime</td><td>" + String(buf) + "</td></tr>";
-    html += "<tr><td>CPU</td><td>" + String(ESP.getCpuFreqMHz()) + " MHz</td></tr>";
-    html += "<tr><td>Temperature</td><td>" + String(temperatureRead(), 1) + " &deg;C</td></tr>";
-    html += "<tr><td>SDK</td><td>" + String(ESP.getSdkVersion()) + "</td></tr></table></div>";
-
-    html += "<div class='card'><h2>Memory</h2><table>";
-    uint32_t fh = ESP.getFreeHeap(); uint32_t th = ESP.getHeapSize();
-    html += "<tr><td>Free Heap</td><td>" + String(fh/1024) + " / " + String(th/1024) + " KB</td></tr>";
-    html += "<tr><td>Flash</td><td>" + String(ESP.getFlashChipSize() / (1024*1024)) + " MB</td></tr>";
-    html += "</table><div class='bar-track'><div class='bar-fill' style='width:" + String((fh*100)/th) + "%'></div></div></div>";
-
-    html += "<div class='card'><h2>Network</h2><table>";
-    if(WiFi.status() == WL_CONNECTED){
-        html += "<tr><td>Status</td><td><span class='chip'>Conn</span></td></tr>";
-        html += "<tr><td>SSID</td><td>" + WiFi.SSID() + " (" + String(WiFi.RSSI()) + "dBm)</td></tr>";
-        html += "<tr><td>IP</td><td>" + WiFi.localIP().toString() + "</td></tr>";
-        html += "<tr><td>MAC</td><td>" + String(macStr) + "</td></tr>";
-    }else{
-         html += "<tr><td>Status</td><td><span class='chip off'>Offline</span></td></tr>";
-    }
-    html += "</table></div></div>";
-
-    html += "<div id='t_gol' class='tab-ctx'><div class='card'><h2>Screen Config</h2>";
-    html += "<div style='margin-bottom:15px'><label class='inp-lbl'>Speed (<span id='s_val'>" + String(state.cycleSpeedMs) + "</span>ms)</label>";
-    html += "<input type='range' id='spd' min='10' max='1000' value='" + String(state.cycleSpeedMs) + "' onchange='upGol()' oninput='updVal(this.value)' style='width:100%'></div>";
-    
-    html += "<div style='display:flex;gap:10px;margin-bottom:20px'>";
-    html += "<div style='flex:1'><label class='inp-lbl'>Alive Color</label><input type='color' id='ca' value='" + String(hexA) + "' onchange='upGol()' style='width:100%;height:40px;border:none;padding:0'></div>";
-    html += "<div style='flex:1'><label class='inp-lbl'>Dead Color</label><input type='color' id='cd' value='" + String(hexD) + "' onchange='upGol()' style='width:100%;height:40px;border:none;padding:0'></div></div>";
-    
-    html += "<div style='display:flex;gap:10px'>";
-    html += "<button class='btn' style='background:#f0f0f0;color:#222' onclick='axGol(\"toggle\")'>Play/Pause</button>";
-    html += "<button class='btn' style='background:#e3f2fd;color:#1565c0' onclick='axGol(\"reset\")'>Random</button>";
-    html += "<button class='btn' style='background:#ffebee;color:#c62828' onclick='axGol(\"clear\")'>Clear</button>";
-    html += "</div></div></div>";
-
-    html += R"(<p class='foot'>ESP32-S3 &middot; <a href='/logout'>Sign out</a></p></body></html>)";
 
     return html;
 }

@@ -12,6 +12,7 @@
 #include "screens/ScreenGamepad.h"
 #include "screens/ScreenAnalogClock.h"
 #include "screens/ScreenFlipClock.h"
+#include "screens/ScreenPalette.h"
 #include "services/WebService.h"
 
 // --- Global Context ---
@@ -67,6 +68,7 @@ void setup()
     // ScreenManager::getInstance().add(new ScreenGamepad());
     ScreenManager::getInstance().add(new ScreenAnalogClock());
     ScreenManager::getInstance().add(new ScreenFlipClock());
+    ScreenManager::getInstance().add(new ScreenPalette());
 
     ScreenManager::getInstance().switchTo(0);
 

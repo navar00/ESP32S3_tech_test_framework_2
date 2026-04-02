@@ -49,15 +49,23 @@ private:
     void handleLogin();
     void handleLogout();
     void handleDashboard();
+    void handleDashboardJS();
     void handleFavicon();
     void handleNotFound();
+
+    // --- System API ---
+    void handleSystemInfo();
 
     // --- GOL API Handlers ---
     void handleGOLConfig();
     void handleGOLAction();
+    void handleGOLStateGet();
+
+    // --- Palettes API Handlers ---
+    void handlePalettesGet();
+    void handlePaletteSet();
 
     // --- Helpers ---
     bool isAuthenticated();
     String buildLoginPage(const char *errorMsg = nullptr);
-    String buildDashboardPage();
 };
