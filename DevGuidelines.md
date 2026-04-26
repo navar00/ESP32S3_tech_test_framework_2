@@ -42,13 +42,20 @@ Un software robusto no es el que nunca falla, sino el que (A) se recupera del fa
 
 ### 1.1 Estrategia de Logging (Runtime)
 El log es la única herramienta de diagnóstico en tiempo real. Debe ser estructurado, parseable y estético.
-*   **Formato Único**: `[Timestamp] [TAG   ] Mensaje`
-*   **Uso de TAGs**: Identificadores alineados de longitud fija (3-5 chars) para facilitar lectura vertical.
-    *   `[BOOT]` -> Inicialización del sistema.
-    *   `[MGR ]` -> Orquestador de Pantallas (State Machine).
-    *   `[BLE ]` -> Eventos del Stack Bluetooth.
-    *   `[PAD ]` -> Lógica específica de Gamepad/Input.
-    *   `[GFX ]` -> Motor gráfico y alertas de alocación de memoria.
+*   **Formato Único**: `[Timestamp] [TAG] Mensaje`
+*   **Uso de TAGs**: Identificadores cortos (preferiblemente 3-5 chars) para facilitar lectura vertical. La política original pedía padding fijo, pero el código real usa TAGs de longitud variable; la prioridad es que sean reconocibles y consistentes por subsistema.
+*   **TAGs canónicos en uso real** (mantenerlos al añadir logs):
+    *   `BOOT`, `BOOT_UI` → `BootOrchestrator` y feedback a `BootConsoleScreen`.
+    *   `MAIN` → `main.cpp` (setup/loop housekeeping).
+    *   `MGR` → `ScreenManager` (state machine).
+    *   `GFX` → motor gráfico y alertas de alocación (`BaseSprite`).
+    *   `WDT` → watchdog.
+    *   `BP32` → Bluepad32 (`InputHAL`).
+    *   `BLE` → stack BLE estándar (`ScreenBLEScan`, `ScreenGamepad`).
+    *   `WebSrv` → `WebService` (handlers HTTP, 404, autenticación).
+    *   `STATUS` → `ScreenStatus` (logs de MAC y red).
+    *   `TimeService`, `NetService`, `GeoService` → servicios homónimos.
+    *   `DISPLAY` → `DisplayHAL`.
 *   **Criterio de Contenido**:
     *   **Info**: Cambios de estado relevantes.
     *   **Debug**: Dumps hexadecimales de tramas de datos (imprescindible para protocolos).

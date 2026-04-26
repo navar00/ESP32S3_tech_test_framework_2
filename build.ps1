@@ -4,7 +4,13 @@ $ErrorActionPreference = "Continue"
 $SourceDir = $PSScriptRoot
 $BuildDir = "C:\Users\egavi\pio_temp_build\TechTest_v2"
 $EnvName = "esp32-s3-devkitc-1"
-$LogFile = "$SourceDir\build_debug_log.txt"
+
+# Logs live next to the build cache (outside OneDrive). Timestamped + alias to latest.
+$LogDir = Join-Path $BuildDir '.logs'
+if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Force -Path $LogDir | Out-Null }
+$LogStamp = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
+$LogFile = Join-Path $LogDir "build_$LogStamp.txt"
+$LogLatest = Join-Path $LogDir 'build_latest.txt'
 
 Write-Host ""
 Write-Host "=== BUILD ESP32S3 Tech Test ===" -ForegroundColor Cyan
@@ -16,8 +22,8 @@ Write-Host ""
 # 1. Prepare Target Directory (preserve .pio cache for incremental builds)
 Write-Host "[1/3] Preparing build directory..." -ForegroundColor Yellow
 if (Test-Path $BuildDir) {
-    # Remove everything EXCEPT .pio folder (build cache)
-    Get-ChildItem -Path $BuildDir -Exclude ".pio" | Remove-Item -Recurse -Force
+    # Remove everything EXCEPT .pio folder (build cache) and .logs (log history)
+    Get-ChildItem -Path $BuildDir -Exclude ".pio", ".logs" | Remove-Item -Recurse -Force
 }
 else {
     New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
@@ -26,7 +32,7 @@ else {
 # 2. Copy Project Files (skip build artifacts, scripts, IDE config)
 Write-Host "[2/3] Copying project files..." -ForegroundColor Yellow
 
-$Exclude = @(".pio", ".git", "build.ps1", "upload.ps1", ".vscode", "build_debug_log.txt", "upload_log.txt")
+$Exclude = @(".pio", ".git", "build.ps1", "upload.ps1", "monitor.ps1", ".vscode")
 Get-ChildItem -Path $SourceDir -Exclude $Exclude | Copy-Item -Destination $BuildDir -Recurse -Force
 
 # 3. Build
@@ -56,7 +62,7 @@ try {
 
         Write-Host ""
         Write-Host "BUILD SUCCESS ($elapsed s)" -ForegroundColor Green
-        if ($ramLine)   { Write-Host "  $($ramLine.Line)" -ForegroundColor Gray }
+        if ($ramLine) { Write-Host "  $($ramLine.Line)" -ForegroundColor Gray }
         if ($flashLine) { Write-Host "  $($flashLine.Line)" -ForegroundColor Gray }
         Write-Host "  Log: $LogFile" -ForegroundColor DarkGray
     }
@@ -84,4 +90,12 @@ catch {
 }
 finally {
     Pop-Location
+    # Update _latest alias and rotate (keep last 10 builds)
+    if (Test-Path $LogFile) {
+        Copy-Item -LiteralPath $LogFile -Destination $LogLatest -Force -ErrorAction SilentlyContinue
+        Get-ChildItem -Path $LogDir -Filter 'build_2*.txt' -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -Skip 10 |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+    }
 }

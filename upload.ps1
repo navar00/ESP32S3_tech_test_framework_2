@@ -7,9 +7,15 @@ $ErrorActionPreference = "Continue"
 $PIO = "$env:USERPROFILE\.platformio\penv\Scripts\platformio.exe"
 $ProjectDir = $PSScriptRoot
 $BuildDir = "C:\Users\egavi\pio_temp_build\TechTest_v2"
-$LogFile = "$ProjectDir\upload_log.txt"
 $EnvName = "esp32-s3-devkitc-1"
 $FirmwareBin = "$BuildDir\.pio\build\$EnvName\firmware.bin"
+
+# Logs next to build cache (outside OneDrive). Timestamped + _latest alias.
+$LogDir = Join-Path $BuildDir '.logs'
+if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Force -Path $LogDir | Out-Null }
+$LogStamp = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'
+$LogFile = Join-Path $LogDir "upload_$LogStamp.txt"
+$LogLatest = Join-Path $LogDir 'upload_latest.txt'
 
 Write-Host ""
 Write-Host "=== UPLOAD ESP32S3 Tech Test ===" -ForegroundColor Cyan
@@ -40,6 +46,15 @@ $startTime = Get-Date
 $exitCode = $LASTEXITCODE
 $elapsed = [math]::Round(((Get-Date) - $startTime).TotalSeconds, 1)
 
+# Update _latest alias and rotate (keep last 10) regardless of success/failure
+if (Test-Path $LogFile) {
+    Copy-Item -LiteralPath $LogFile -Destination $LogLatest -Force -ErrorAction SilentlyContinue
+    Get-ChildItem -Path $LogDir -Filter 'upload_2*.txt' -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -Skip 10 |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+}
+
 if ($exitCode -ne 0) {
     Write-Host ""
     Write-Host "UPLOAD FAILED ($elapsed s) - Exit code: $exitCode" -ForegroundColor Red
@@ -64,6 +79,7 @@ $port = if ($portLine -and $portLine.Matches) { $portLine.Matches[0].Groups[1].V
 Write-Host "UPLOAD SUCCESS ($elapsed s) -> $port" -ForegroundColor Green
 Write-Host "  Log: $LogFile" -ForegroundColor DarkGray
 Write-Host ""
+
 
 # --- Step 2: Serial Monitor ---
 Write-Host "[2/2] Serial Monitor on $port (Ctrl+C to exit)" -ForegroundColor Yellow

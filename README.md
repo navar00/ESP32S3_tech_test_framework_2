@@ -15,8 +15,11 @@ El sistema abandona el tradicional "Spaghetti Code" de Arduino en favor de una a
     *   `InputHAL`: Wrapper para **Bluepad32**. Gestiona la pila Bluetooth y los eventos de Gamepads. Implementa stubs críticos para evitar crashes por callbacks nulos.
 2.  **Capa Core**: (`/src/core`)
     *   `ScreenManager`: Orquestador del ciclo de vida de la aplicación.
-    *   `BootOrchestrator`: Secuencia de arranque con UI de progreso (WiFi → GeoIP → NTP).
+    *   `BootOrchestrator`: Secuencia de arranque con UI de progreso (WiFi → GeoIP → NTP → WebService).
     *   `Logger`: Sistema de trazas centralizado.
+    *   `WatchdogManager` / `WatchdogHAL`: Wrappers del TWDT con dos timeouts (8 s boot, 3 s runtime).
+    *   `StorageHAL`: NVS — boot counter persistente, útil para detectar reset-loops.
+    *   `GOLConfig`: Estado compartido entre TFT (`ScreenGameOfLife`) y `WebService` con protección `portMUX_TYPE` (patrón replicable para futuros estados configurables vía web).
 3.  **Capa Servicios**: (`/src/services`)
     *   `TimeService`: Singleton NTP con sincronización automática (`pool.ntp.org`, `time.nist.gov`). Expone `getTimeParts()`, `getDateParts()`, countdown hasta resync.
     *   `NetService`: Gestión WiFi con reconexión automática.
@@ -37,17 +40,30 @@ El sistema abandona el tradicional "Spaghetti Code" de Arduino en favor de una a
 .
 ├── platformio.ini        # Configuración de Entorno & Hardware (Build Flags)
 ├── build.ps1             # Script de compilación (salida limpia + log detallado)
-├── upload.ps1            # Script de upload + monitor serie (sin recompilación)
+├── upload.ps1            # Script de upload (sin recompilación)
+├── monitor.ps1           # Captura del puerto serie a log con Tee-Object (rotación 10)
+├── AGENTS.md             # Punto de entrada cross-tool para agentes IA
+├── DevGuidelines.md      # Reglas duras y heurísticas extendidas
+├── .github/              # Customización de agente (Copilot, Cursor, Codex…)
+│   ├── copilot-instructions.md   # Contexto base always-on (~1.5 KB)
+│   ├── instructions/             # Reglas con `applyTo` por glob
+│   ├── skills/                   # 8 skills especializadas (tft-screen, webservice-http, …)
+│   ├── prompts/                  # Prompts invocables: release, audit-screen, dump-status
+│   └── workflows/ci.yml          # GitHub Actions: build + test + cppcheck
+├── aux_/                 # Scripts auxiliares de desarrollo (.py + .ps1)
+├── test/                 # Tests Unity host (pio test -e native)
+│   └── test_native_smoke/        # Smoke test de la cadena de build host + helpers de color
 ├── src/
 │   ├── main.cpp          # Entry Point: Setup & Loop (Minimalista)
 │   ├── core/             # Lógica de Negocio Pura
 │   │   ├── Config.h      # Constantes Hardware/Software (constexpr)
 │   │   ├── Logger.h      # Wrapper Serial (Variadic Args)
 │   │   ├── BootOrchestrator # Secuencia de arranque con UI
+│   │   ├── GOLConfig     # Estado compartido TFT↔Web (portMUX)
 │   │   └── ScreenManager # State Machine & Event Dispatcher
 │   ├── hal/              # Abstracción de Hardware
 │   │   ├── Hal.h         # Facade para inclusions
-│   │   └── ...           # Implementaciones (Display, Led, Input)
+│   │   └── ...           # Implementaciones (Display, Led, Input, Watchdog, Storage)
 │   ├── services/         # Servicios de Red y Tiempo
 │   │   ├── TimeService   # NTP sync + getTimeParts/getDateParts
 │   │   ├── NetService    # WiFi manager
@@ -60,8 +76,10 @@ El sistema abandona el tradicional "Spaghetti Code" de Arduino en favor de una a
 │       ├── ScreenStatus  # Monitor de Sistema (3 secciones)
 │       ├── ScreenAnalogClock # Reloj Analógico + Calendario Mensual
 │       ├── ScreenFlipClock   # Flip Clock 7-segmentos (HH:MM)
-│       ├── ScreenBLEScan # Escáner Simplificado (Latente)
-│       └── ScreenGamepad # Cliente BLE HID (Activo)
+│       ├── ScreenGameOfLife  # Conway's GoL (control vía Web Dashboard)
+│       ├── ScreenPalette     # Selector de paletas con preview
+│       ├── ScreenBLEScan     # Escáner BLE (Latente)
+│       └── ScreenGamepad     # Cliente BLE HID (Activo)
 ```
 
 ---
@@ -158,8 +176,11 @@ El LED RGB integrado actúa como un indicador de estado del sistema (System Sema
 ### 3.6 Sistema de Seguridad y Watchdog (Overarching WDT)
 Para garantizar la fiabilidad en despliegues desatendidos ("Zero Maintenance"), el sistema implementa una vigilancia activa del bucle principal.
 
-*   **Task Watchdog Timer (TWDT)**: Configurado a **8 segundos**. Si el bucle principal (`loop()`) se bloquea por más de este tiempo (e.g., driver SPI colgado, bucle infinito), el hardware reiniciará la CPU.
-    *   *Nota*: El escaneo BLE dura 5s, lo cual entra dentro del margen de seguridad.
+*   **Task Watchdog Timer (TWDT)**:
+    *   `Config::WDT_TIMEOUT_BOOT = 8000` (8 s) durante `BootOrchestrator::run()`, donde caben operaciones bloqueantes legítimas (WiFi connect, NTP sync, fetch GeoIP).
+    *   `Config::WDT_TIMEOUT_LOOP = 3000` (3 s) en runtime — el `loop()` debe alimentar el WDT en cada iteración.
+    *   Si el bucle principal se bloquea por más de este tiempo (driver SPI colgado, `BLEClient::connect()` síncrono, etc.), el hardware reiniciará la CPU.
+    *   *Nota*: El escaneo BLE dura 5 s, por lo que se ejecuta SOLO desde una task dedicada o pantalla con WDT pausado, nunca desde el `loop()` principal.
 *   **Gestión de Reset (Crash Recovery)**:
     *   Al arrancar, el sistema consulta `esp_reset_reason()`.
     *   Si la causa fue un **WDT Reset** o **Panic**, el LED parpadeará en **Rojo** durante 2 segundos antes de iniciar, alertando visualmente del fallo anterior.
@@ -207,7 +228,7 @@ Se han incluido scripts de PowerShell en la raíz del proyecto para facilitar el
 ./build.ps1
 ```
 *   **Salida en pantalla**: Progreso por pasos (`[1/3]`, `[2/3]`, `[3/3]`), resultado (`SUCCESS`/`FAILED`), tiempo de compilación y uso de RAM/Flash.
-*   **Log detallado**: `build_debug_log.txt` — Contiene toda la salida del compilador (warnings, includes, linking, etc.).
+*   **Log detallado**: `<BuildDir>\.logs\build_<timestamp>.txt` (+ alias `build_latest.txt`). Contiene toda la salida del compilador (warnings, includes, linking, etc.).
 *   **En caso de error**: Extrae y muestra automáticamente las líneas con `error:` en pantalla.
 
 **Subir Firmware + Monitor Serie:**
@@ -215,18 +236,50 @@ Se han incluido scripts de PowerShell en la raíz del proyecto para facilitar el
 ./upload.ps1
 ```
 *   **Salida en pantalla**: Progreso por pasos (`[1/2]` upload, `[2/2]` monitor), resultado, puerto COM detectado y luego el monitor serie en directo.
-*   **Log detallado**: `upload_log.txt` — Contiene toda la salida del proceso de compilación incremental, flashing y verificación.
+*   **Log detallado**: `<BuildDir>\.logs\upload_<timestamp>.txt` (+ alias `upload_latest.txt`). Contiene toda la salida del proceso de flashing y verificación.
 *   **Monitor Serie**: Se abre automáticamente tras un upload exitoso para capturar los logs de arranque del ESP32.
 
-**Ficheros de Log generados:**
+**Ficheros de Log generados** (en `C:\Users\egavi\pio_temp_build\TechTest_v2\.logs\`, fuera de OneDrive, rotación automática de los 10 más recientes):
 | Fichero | Contenido | Cuándo consultar |
 | :--- | :--- | :--- |
-| `build_debug_log.txt` | Salida completa del compilador | Warnings, errores de linking, análisis de dependencias |
-| `upload_log.txt` | Salida completa del flash | Errores de conexión al puerto serie, verificación de firmware |
+| `build_latest.txt` / `build_<timestamp>.txt` | Salida completa del compilador | Warnings, errores de linking, análisis de dependencias |
+| `upload_latest.txt` / `upload_<timestamp>.txt` | Salida completa del flash | Errores de conexión al puerto serie, verificación de firmware |
+| `monitor_latest.log` / `monitor_<timestamp>.log` | Captura del monitor serie (`monitor.ps1`) | Análisis post-mortem de panics, WDT resets, parsing offline |
 
 *(Nota: Estos scripts detectan automáticamente la instalación de PlatformIO en el perfil de usuario)*
 
-### 5.3 Compilación Manual (Legacy)
+**Captura de logs del puerto serie:**
+```powershell
+./monitor.ps1                    # auto-detecta COM, baud 115200
+./monitor.ps1 -Port COM5         # puerto explícito
+./monitor.ps1 -Baud 921600       # otro baud rate
+./monitor.ps1 -NoTee             # solo pantalla, sin escribir log
+```
+El log se escribe simultáneamente en pantalla y en `<BuildDir>\.logs\monitor_<timestamp>.log` con `Tee-Object`. Útil cuando el agente necesita analizar arranques o crashes (skill `runtime-debug`).
+
+### 5.3 Tests, análisis estático y CI
+
+**Tests host (Unity, lógica pura):**
+```powershell
+pio test -e native
+```
+Tests bajo `test/test_native_*` se ejecutan en el PC sin Arduino. Solo lógica pura (helpers, parsers, mapeos de color). Requiere `gcc/g++` en PATH (Linux/CI lo trae; en Windows instalar MinGW o w64devkit).
+
+**Análisis estático (cppcheck):**
+```powershell
+pio check -e check
+```
+Reporta `warning/style/performance/portability` sobre `src/`. No bloqueante, pero objetivo: cero defects `high` antes de tag de release.
+
+**CI (GitHub Actions):**
+`.github/workflows/ci.yml` corre tres jobs en cada push/PR a `main`:
+- `build` — compila firmware (`pio run -e esp32-s3-devkitc-1`) y publica `firmware.bin` como artefacto.
+- `test` — ejecuta `pio test -e native`.
+- `check` — ejecuta `pio check -e check --fail-on-defect=high` (informativo).
+
+CI stubea `src/core/Config.h` desde `Config_Template.h` (las credenciales reales no están versionadas).
+
+### 5.4 Compilación Manual (Legacy)
 Para usuarios avanzados usando terminal PowerShell:
 
 **Compilar:**
@@ -267,9 +320,9 @@ Se ratifica el uso de `display.clear()` + Redraw completo como estrategia válid
 *   La pila BLE no libera toda la memoria inmediatamente al llamar a `clearResults()`.
 
 **Solución Virtuosa**:
-1.  **Activación de PSRAM (Revisada)**: Se añadieron flags `-D BOARD_HAS_PSRAM` y `-mfix-esp32-psram-cache-issue` en `platformio.ini`.
-2.  **Limpieza Agresiva**: En `ScreenBLE::onExit` y al final del escaneo, se fuerza `pBLEScan->clearResults()` para liberar memoria interna antes de intentar alojar la siguiente pantalla.
-3.  **Código Defensivo**: La clase `BaseSprite` ahora captura el fallo de `malloc` y, si la PSRAM falla, evita el crash del sistema, aunque la pantalla permanezca en negro hasta el siguiente ciclo exitoso (Graceful Degradation).
+1.  **PSRAM (NO ACTIVA actualmente)**: Los flags `-D BOARD_HAS_PSRAM` y `-mfix-esp32-psram-cache-issue` están **comentados** en `platformio.ini`. La hipótesis original asumía variantes N8R2/N8R8 con PSRAM física; en la placa de desarrollo actual no se confirmó. La estabilidad se obtiene sin PSRAM gracias a los puntos 2 y 3.
+2.  **Limpieza Agresiva**: En `ScreenBLEScan::onExit` y al final del escaneo, se fuerza `pBLEScan->clearResults()` para liberar memoria interna antes de intentar alojar la siguiente pantalla.
+3.  **Código Defensivo (Graceful Degradation)**: La clase `BaseSprite` intenta 16 bpp → 8 bpp → 4 bpp y, si todas fallan, registra el fallo (`GFX: CRITICAL: Sprite Alloc Failed!`) en lugar de crashear. La siguiente entrada a la pantalla suele lograr alojar al haberse defragmentado el heap.
 
 **NOTA IMPORTANTE**: Si el error persiste, confirmar que el hardware físico es realmente un ESP32-S3 *con* PSRAM (versiones N8R2 o N8R8). En placas "N8" (sin R suffix), la PSRAM no existe y la única solución es reducir la profundidad de color o usar renderizado directo sin Sprites.
 
@@ -438,6 +491,55 @@ lS().then(function(){ return lG() }).then(function(){ return lP() });
 
 ## 7. Changelog
 
+### v0.6.2 — 2026-04-26
+**Toolchain de agentes IA y CI (sin cambios de firmware):**
+
+Iteración 100 % dedicada a infraestructura de desarrollo asistido por IA y validación automática. No toca código de runtime; firmware idéntico a v0.6.1.
+
+**Customización de agente (`.github/`):**
+*   `copilot-instructions.md` — contexto base always-on (~1.5 KB) con stack, capas, reglas duras, hardware, logging, watchdog, build, calidad, restricciones WebService/BLE, skills y prompts.
+*   `instructions/` — 6 ficheros con `applyTo` por glob: `core-shared-state` (GOLConfig), `hal`, `powershell`, `screens`, `services-web`, `services`.
+*   `skills/` — 8 skills especializadas con triggers semánticos:
+    *   `tft-screen` — crear/editar `IScreen` + `BaseSprite`.
+    *   `webservice-http` — endpoints, restricciones TCP, GOLConfig.
+    *   `ble-input` — Bluepad32 / BLE scan / dual stack.
+    *   `runtime-debug` — panics, WDT, heap, parsing de `monitor_latest.log`.
+    *   `iteration-close` — bump versión, changelog, sync README, gates de calidad.
+    *   `git-workflow` — commits, tags, release, recovery.
+    *   `build-pipeline` — build/upload, regeneración de `PalettesData.h`.
+    *   `scaffold-new-project` — clonar el framework como proyecto nuevo.
+*   `prompts/` — 3 prompts invocables (`mode: agent`):
+    *   `release.prompt.md` — orquesta `iteration-close` + `git-workflow` con confirmación explícita antes de push.
+    *   `audit-screen.prompt.md` — auditoría read-only de una `IScreen` contra todas las hard rules.
+    *   `dump-status.prompt.md` — snapshot estructurado del proyecto (versión, pantallas, sizes, endpoints, blobs PROGMEM).
+*   `AGENTS.md` (raíz) — punto de entrada cross-tool (Copilot/Cursor/Codex/Aider) con jerarquía de contexto, hard rules, skills, prompts y antipatrones.
+
+**Captura del puerto serie (`monitor.ps1`):**
+*   Nuevo script PowerShell con `Tee-Object` que escribe simultáneamente a pantalla y a `<BuildDir>\.logs\monitor_<timestamp>.log` (alias `monitor_latest.log`, rotación 10).
+*   Parámetros: `-Port COMx`, `-Baud 115200`, `-NoTee`. Auto-detecta el puerto si no se indica.
+*   `build.ps1` actualizado para excluir `monitor.ps1` al copiar al directorio de build.
+*   `runtime-debug` skill amplía su sección de logs con ejemplos de invocación y patrón `Get-Content -Tail 80` para análisis post-mortem.
+
+**Test harness host (`[env:native]`):**
+*   Nuevo entorno PlatformIO `native` con framework `unity` y filtro `test_filter = test_native_*`.
+*   `test/test_native_smoke/test_main.cpp` — 3 tests Unity (sanity aritmético + helpers de color RGB565/RGB332 que replican la lógica de `BaseSprite`).
+*   Política: solo lógica pura (parsers, mapeos, helpers). Lo que dependa de Arduino se prueba en hardware. Requiere `gcc/g++` en PATH (CI Ubuntu lo trae; en Windows requiere MinGW).
+
+**Análisis estático (`[env:check]`):**
+*   Nuevo entorno PlatformIO con `cppcheck` (`warning,style,performance,portability` + `--inline-suppr`).
+*   Validado: 0 defects HIGH, 4 MEDIUM pre-existentes (miembros sin inicializar en `ScreenAnalogClock` y `ScreenPalette`, accionables sin urgencia).
+
+**CI (`.github/workflows/ci.yml`):**
+*   Tres jobs en `ubuntu-latest` para cada push/PR a `main`:
+    *   `build` — `pio run -e esp32-s3-devkitc-1`, sube `firmware.bin` como artefacto (retención 14 días).
+    *   `test` — `pio test -e native`.
+    *   `check` — `pio check -e check --fail-on-defect=high` (informativo, `continue-on-error: true`).
+*   Cache de `~/.platformio/{packages,platforms,.cache}` por hash de `platformio.ini`.
+*   Stub automático de `src/core/Config.h` desde `Config_Template.h` (las credenciales reales no están versionadas).
+
+**Memoria persistente (`/memories/repo/`):**
+*   `esp32s3-tft-framework.md` — lecciones duramente ganadas en 6 secciones (hardware/build, runtime, web/TCP, build pipeline, convenciones, antipatrones). Incluye la disambiguación board ID `esp32-s3-devkitc-1` vs `lolin_s3` y la prohibición de `BLEDevice::deinit(true)`.
+
 ### v0.6.0 — 2026-04-02
 **Refactorización Completa del Web Dashboard (Shell + AJAX):**
 
@@ -545,8 +647,8 @@ El dashboard monolítico HTML (~8KB en una sola respuesta) fue reemplazado por u
 *   Intervalo de resync configurable (`NTP_SYNC_INTERVAL = 3600s`).
 
 **Build Pipeline:**
-*   `build.ps1`: Compilación incremental (preserva caché `.pio`). Salida limpia con log en `build_debug_log.txt`.
-*   `upload.ps1`: Upload sin recompilación (reutiliza `firmware.bin` del build). Log en `upload_log.txt`.
+*   `build.ps1`: Compilación incremental (preserva caché `.pio`). Salida limpia con logs timestamped en `<BuildDir>\.logs\` (rotación 10).
+*   `upload.ps1`: Upload sin recompilación (reutiliza `firmware.bin` del build). Logs en `<BuildDir>\.logs\`.
 *   IntelliSense: Generación de `compile_commands.json` via `pio run -t compiledb` + configuración en `c_cpp_properties.json`.
 
 **Fixes:**
