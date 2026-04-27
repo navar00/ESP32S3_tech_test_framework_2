@@ -1,50 +1,111 @@
 ---
 name: ble-input
-description: "Use when working with Bluetooth in TechTest v2: Bluepad32 gamepads (InputHAL), BLE Arduino scanning (ScreenBLEScan/ScreenGamepad), HID classification, async BLE connections, or dealing with the dual BLE stack coexistence. Triggers: 'Bluepad32', 'gamepad ESP32', 'BLE scan', 'HID 0x1812', 'BLEClient connect bloqueante', 'BLEDevice deinit panic', 'pinned core 0 BLE', 'dual stack BLE'."
+description: "Use when reintroducing Bluetooth/BLE in ESP32S3-TFT Framework. BLE was retired in F1 (Apr 2026) — the framework no longer ships Bluepad32, InputHAL, ScreenGamepad or ScreenBLEScan. Triggers: 'añadir BLE', 'reintroducir gamepad', 'NimBLE-Arduino', 'ESP-HID host', 'mando PS5 ESP32', 'BLE scan', 'dual stack BLE'. Provides decision matrix and migration paths."
 ---
 
-# Skill: BLE & Input (TechTest v2)
+# Skill: BLE & Input — REINTRODUCTION GUIDE (post F1)
 
-## Cuándo aplica
-- Trabajar con `src/hal/InputHAL.{h,cpp}` (Bluepad32) o pantallas BLE: `ScreenBLEScan`, `ScreenGamepad`.
-- Conectar a dispositivos HID, escanear, clasificar.
+## Estado actual del repo
+**BLE retirado del binario** (F1 commit). Lo que se eliminó:
+- `src/hal/InputHAL.{h,cpp}` (Bluepad32).
+- `src/screens/ScreenGamepad.h`, `src/screens/ScreenBLEScan.h`, `src/screens/ScreenBLE.h.disabled`.
+- `platform_packages` (fork `ricardoquesada/esp32-arduino-lib-builder`) → ahora arduino-esp32 stock.
+- `REQUIRES bluepad32` en `src/CMakeLists.txt`.
 
-## Coexistencia obligatoria de dos stacks
-TechTest v2 tiene **dos stacks BLE en el mismo binario**:
-1. **Bluepad32** (fork `ricardoquesada/esp32-arduino-lib-builder`) — usado por `InputHAL` para gamepads HID. Hace `#include <Bluepad32.h>`.
-2. **BLE Arduino estándar** (`BLEDevice`, `BLEClient`, `BLEScan`) — usado por `ScreenBLEScan` y `ScreenGamepad` (modo explorador).
+**Ahorro logrado**: −43 KB RAM, −256 KB Flash, toolchain alineada con upstream.
 
-`platform_packages` en `platformio.ini` apunta al fork de Quesada para que ambos compilen.
+## Cuándo aplica esta skill
+- El usuario quiere **volver a tener**: gamepads, scan BLE, periféricos HID, o un GATT server.
 
-## Reglas duras
-- **Nunca** llamar `BLEDevice::deinit(true)` en runtime. La re-inicialización es inestable → panic en `esp_bt_controller_mem_release`. Mantener stack vivo y confiar en degradación de RAM (`BaseSprite` 16→8→4 bpp).
-- **`BLEClient::connect()` es bloqueante** y puede tardar > 8 s. Si se ejecuta en el loop principal → WDT reset. Ejecutar SIEMPRE en task FreeRTOS pinned a Core 0:
+## Árbol de decisión
+
+```
+¿Qué tipo de dispositivo Bluetooth?
+│
+├─ Sólo HID estándar (PS4/PS5 modo BLE-HID, teclado/ratón BLE)
+│   → Opción C: esp_hidh nativo + NimBLE-Arduino
+│   → ~30 KB RAM, ~120 KB Flash
+│
+├─ Mandos propietarios (Switch Pro, Wii, DualSense rumble, Xbox One BLE)
+│   → Opción A: Reintroducir Bluepad32 (re-añadir platform_packages)
+│   → ~80 KB RAM, ~250 KB Flash
+│
+└─ Solo escanear/conectar a periféricos genéricos (heart-rate, sensores, beacons)
+    → Opción B: NimBLE-Arduino (h2zero/NimBLE-Arduino)
+    → ~30 KB RAM, ~120 KB Flash
+```
+
+## Opción B — NimBLE-Arduino (recomendada por defecto)
+
+```ini
+; platformio.ini
+lib_deps =
+  h2zero/NimBLE-Arduino @ ^1.4.1
+build_flags =
+  -D CONFIG_BT_NIMBLE_ENABLED=1
+```
+
+```cpp
+#include <NimBLEDevice.h>
+NimBLEDevice::init(Config::SYS_NAME);
+auto* pScan = NimBLEDevice::getScan();
+pScan->setActiveScan(true);
+NimBLEScanResults res = pScan->getResults(5000, false);  // 5 s, valor
+```
+
+API casi idéntica a `BLEDevice` Arduino: prefijo `NimBLE` y `getResults(ms, restart)` en vez de `start(s, isContinue)`.
+
+## Opción A — Reintroducir Bluepad32
+
+```ini
+[env:esp32-s3-devkitc-1]
+platform_packages =
+    framework-arduinoespressif32 @ https://github.com/ricardoquesada/esp32-arduino-lib-builder/releases/download/4.1.0/esp32-bluepad32-4.1.0.zip
+    toolchain-xtensa-esp32s3 @ 12.2.0+20230208
+```
+Restaurar `src/CMakeLists.txt` con `REQUIRES bluepad32`. Recrear `InputHAL` (ver historial git pre-F1).
+
+**Coste**: vuelves a arrastrar Bluedroid + BT-Classic, toolchain rezagada ~6 meses respecto al upstream Espressif (perderás `esp_task_wdt_config_t` y otras APIs IDF v5 modernas).
+
+## Opción C — esp_hidh + NimBLE (avanzada)
+
+Componente IDF oficial `esp_hidh` (`#include <esp_hidh.h>`). Funciona sobre NimBLE-only. Requiere escribir un `InputHAL` nuevo (~300 LOC) que escuche callbacks HID y mapee el descriptor a estado de gamepad. **No** soporta Switch Pro nativo (handshake propietario).
+
+## Reglas duras heredadas (vigentes si se reactiva)
+
+- **Nunca** `BLEDevice::deinit(true)` / `NimBLEDevice::deinit(true)` en runtime → panic en re-init en `esp_bt_controller_mem_release`. Mantener stack vivo.
+- **`BLEClient::connect()` bloqueante > 8 s** → SIEMPRE en `xTaskCreatePinnedToCore` Core 0:
 
 ```cpp
 xTaskCreatePinnedToCore(
     [](void* arg) {
-        auto* self = static_cast<ScreenGamepad*>(arg);
-        self->connectAsync();   // operación bloqueante aislada
+        auto* self = static_cast<MyScreen*>(arg);
+        self->connectAsync();
         vTaskDelete(NULL);
     },
-    "BLEConnect", 8192, this, 1, &_taskHandle, 0    // último arg = Core 0
+    "BLEConnect", 8192, this, 1, &_taskHandle, 0    // Core 0
 );
 ```
-- El `onLoop()` UI sigue refrescando a 60 FPS mientras la conexión ocurre en background.
+- **Scan BLE máximo 5 s consecutivos** (margen WDT 8 s boot / 3 s loop).
+- En `onExit()`: `pScan->stop()` + `pScan->clearResults()` antes de soltar la pantalla.
 
-## Bluepad32 — `InputHAL` (gamepads)
-- Singleton. `init()` durante setup tras WiFi (o como tu `main.cpp` decida; ahora está desactivado por defecto).
-- `update()` debe llamarse en `loop()` cada iteración si está activo.
-- Implementa stubs de callbacks aunque no los uses: callbacks nulos provocan crash.
-- MAC Bluetooth visible vía `InputHAL::getInstance().getLocalMacAddress()` — necesaria para emparejar con `SixaxisPairTool`.
+## Coexistencia RF (Wi-Fi + BLE comparten radio 2.4 GHz)
 
-## Escaneo BLE (`ScreenBLEScan`)
-- Escaneo bloqueante 5 s (`pBLEScan->start(5, false)`) — entra en margen del WDT (3 s feed + 8 s real). No subir.
-- En `onExit()`: `pBLEScan->clearResults()` para liberar RAM antes de la siguiente pantalla (mitiga heap fragmentation).
-- Optimizar el render del listado evitando `std::string::substr()` y truncados dinámicos. Usar aritmética de `char*` y `snprintf("%.6s", ...)` (ver README §6.1).
+Mientras `WebService` sirva HTTP y haya scan/connect BLE concurrente, los slots se reparten y aparecen:
+- Scan devolviendo menos resultados.
+- Connect time-out aleatorio.
+- HTTP latencia errática (200-2000 ms).
 
-## Clasificación HID estándar
-Para etiquetar dispositivos en logs y UI:
+Mitigación cuando se reactive BLE:
+```cpp
+WiFi.setSleep(WIFI_PS_NONE);   // antes de connect/scan denso
+// ... operación BLE ...
+WiFi.setSleep(WIFI_PS_MIN_MODEM);   // restaurar
+```
+
+Referencia: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-guides/coexist.html>.
+
+## Clasificación HID estándar (para UI/log)
 - HID: Service UUID `0x1812` o Appearance ≥ 960.
 - Audio: Service UUID `0x180E` / `0x110B`.
 - Formato log obligatorio:
@@ -52,26 +113,7 @@ Para etiquetar dispositivos en logs y UI:
   [BLE] Found: <MAC> | RSSI: <dBm> | Nature: <HID|AUDIO|GENERIC> | Name: <NAME>
   ```
 
-## Pantalla en loop con conexión async — checklist
-- `onEnter()`: lanzar task pinned Core 0, mostrar "Connecting..." en sprite.
-- `onLoop()`: leer estado vía variable atómica/mutex, animar mientras `_connecting == true`.
-- `onExit()`: `vTaskDelete` si la task sigue viva, `BLEClient::disconnect()` (NO `deinit`), `pBLEScan->clearResults()` si aplicable.
-
-## Logging
-- TAGs canónicos: `BP32` (Bluepad32), `BLE` (stack Arduino), `PAD` (lógica gamepad).
-- Errores siempre con código: `Connect Failed: Timeout (Err 0x12)` — nunca `"Connect failed"` sólo.
-
-## Estado actual real en repo
-- `InputHAL::update()` está **comentado en `main.cpp`** ("DESACTIVADO BLE: Nos centramos en WiFi"). Si vas a reactivarlo:
-  1. Descomentar `InputHAL::getInstance().init()` en `setup()`.
-  2. Descomentar `InputHAL::getInstance().update()` en `loop()`.
-  3. Descomentar registro de `ScreenGamepad`.
-  4. Verificar que el WDT (3 s) sigue alimentado durante el handshake inicial.
-
-## Antipatrones
-| Hacer | NO hacer |
-|---|---|
-| Task pinned Core 0 para `connect()` | `connect()` desde `onLoop()` |
-| Mantener stack BLE init | `BLEDevice::deinit(true)` |
-| Stubs de callbacks vacíos | Pasar `nullptr` como callback |
-| `clearResults()` en `onExit` | Acumular escaneos entre pantallas |
+## TAGs de logger (cuando se reactive)
+- `BLE` — stack BLE genérico (NimBLE/Bluedroid).
+- `BP32` — Bluepad32 (sólo si Opción A).
+- `PAD` — lógica de gamepad/HID por encima del stack.

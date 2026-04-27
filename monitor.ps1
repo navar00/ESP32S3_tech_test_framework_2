@@ -13,7 +13,7 @@ param(
 $ErrorActionPreference = "Continue"
 
 $PIO = "$env:USERPROFILE\.platformio\penv\Scripts\platformio.exe"
-$BuildDir = "C:\Users\egavi\pio_temp_build\TechTest_v2"
+$BuildDir = "C:\Users\egavi\pio_temp_build\ESP32S3-TFT_Framework"
 $LogDir = Join-Path $BuildDir '.logs'
 if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Force -Path $LogDir | Out-Null }
 $Stamp = Get-Date -Format 'yyyy-MM-dd_HH-mm-ss'

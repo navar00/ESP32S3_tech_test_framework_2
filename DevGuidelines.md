@@ -49,10 +49,9 @@ El log es la única herramienta de diagnóstico en tiempo real. Debe ser estruct
     *   `MAIN` → `main.cpp` (setup/loop housekeeping).
     *   `MGR` → `ScreenManager` (state machine).
     *   `GFX` → motor gráfico y alertas de alocación (`BaseSprite`).
-    *   `WDT` → watchdog.
-    *   `BP32` → Bluepad32 (`InputHAL`).
-    *   `BLE` → stack BLE estándar (`ScreenBLEScan`, `ScreenGamepad`).
-    *   `WebSrv` → `WebService` (handlers HTTP, 404, autenticación).
+    *   `WDT` — watchdog.
+    *   `STG` — `StorageHAL` (NVS).
+    *   `WebSrv` — `WebService` (handlers HTTP, 404, autenticación).
     *   `STATUS` → `ScreenStatus` (logs de MAC y red).
     *   `TimeService`, `NetService`, `GeoService` → servicios homónimos.
     *   `DISPLAY` → `DisplayHAL`.
@@ -177,12 +176,12 @@ Una tarea o iteración solo se considera cerrada si cumple **TODOS** los puntos:
 **Objetivo**: Convertir el código fuente en un contexto rico para futuros agentes de IA (Humanos o LLMs).
 
 ### 7.1 Encabezados de Clase (El "Por Qué")
-Cada clase mayor debe comenzar con un bloque que explique no solo qué hace, sino las decisiones de diseño tomadas.
+Cada clase mayor debe comenzar con un bloque que explique no solo qué hace, sino las decisiones de diseño tomadas. Ejemplo histórico (`ScreenGamepad`, retirado en F1):
 ```cpp
 /**
- * @class ScreenGamepad
+ * @class ScreenGamepad   // [Retirada en F1, ejemplo de patrón Async-BLE]
  * @brief Monitor de Input BLE para depuración.
- * 
+ *
  * DESIGN DECISIONS:
  * - Uses Async Task (Core 0) to prevent Main Loop WDT starvation during connection.
  * - ZERO-COPY: Uses static buffers to avoid Heap Fragmentation.
@@ -276,6 +275,98 @@ Basado en la integración del Web Dashboard (Shell + AJAX) y The Game of Life:
 
 ### 10.5 Optimización Extrema de RAM en Pantallas (Graceful Degradation)
 *   Las matrices grandes (como la del autómata celular) no deben usar arrays estáticos de bytes (`uint8_t grid[320*240]`). Para mitigar el temido `Alloc 16bpp Failed`, se DEBEN usar **estructuras Bitwise** (1 celda = 1 bit de RAM), reduciendo el consumo de memoria dinámica en ~88%.
+
+---
+
+## 11. ESP-IDF DESDE ARDUINO (APIs aprovechables)
+**Principio**: El core Arduino-ESP32 está construido sobre ESP-IDF. Las APIs `esp_*`, `heap_caps_*`, `xTaskCreate*`, `esp_timer_*`, `esp_task_wdt_*` son **directamente invocables desde código `.cpp`** sin renunciar al framework Arduino. Documentación de referencia: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/index.html>.
+
+### 11.1 Heap & memoria (REGLA DURA)
+*   **Buffers DMA y sprites TFT obligatoriamente en heap interno**. El SPI HSPI requiere memoria DMA-capable; no se puede asumir. Usar:
+    ```cpp
+    void* buf = heap_caps_malloc(size, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    ```
+*   **Antes de alocar > 32 KB contiguos** (sprites, buffers JSON), inspeccionar el heap real:
+    ```cpp
+    size_t free  = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    size_t block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    Logger::log("HEAP", "Free=%u, LargestBlock=%u", free, block);
+    ```
+    El **largest contiguous block** es el dato crítico para predecir si un sprite cabe. `free` total puede mentir por fragmentación (causa raíz del *Black Screen Bug*, README §6.3).
+*   **Tipos de memoria** (referencia Memory Types): IRAM (código rápido, 32 KB), DRAM (datos), RTC (deep-sleep persistente), SPIRAM (PSRAM, hoy deshabilitada). Nunca colocar callbacks de ISR en SPIRAM.
+*   **Headers**: `#include "esp_heap_caps.h"`.
+
+### 11.2 IRAM_ATTR — Reglas para ISR y flash-disabled
+Cualquier función invocada desde un ISR, o desde un contexto con flash deshabilitado (escrituras NVS, OTA), DEBE estar marcada `IRAM_ATTR`. Si no, el panic es `Cache disabled but cached memory region accessed`.
+```cpp
+void IRAM_ATTR onTimerISR() { _flag = true; }
+```
+Casos en este proyecto: ISR del timer 1 Hz (`main.cpp`), futuros callbacks de `gpio_isr_handler_add()`.
+
+### 11.3 FreeRTOS — instrumentación obligatoria de tasks
+Toda task creada con `xTaskCreatePinnedToCore` para trabajo bloqueante (BLE connect, WiFi setup, futuras descargas HTTPS) DEBE:
+1.  Recibir un stack dimensionado y verificable. Tras un ciclo representativo, loggear el watermark:
+    ```cpp
+    UBaseType_t hwm = uxTaskGetStackHighWaterMark(NULL);
+    Logger::log("BLE", "Task stack remaining: %u bytes", hwm * sizeof(StackType_t));
+    ```
+    Si el watermark < 512 bytes → ampliar el stack al alocar la task.
+2.  **Registrarse explícitamente en el TWDT** si su trabajo se prolonga > 3 s:
+    ```cpp
+    esp_task_wdt_add(NULL);     // al inicio de la task
+    esp_task_wdt_reset();       // periódicamente dentro del bucle
+    esp_task_wdt_delete(NULL);  // antes de vTaskDelete(NULL)
+    ```
+    Sin esto, una task pinned a Core 0 que cuelgue NO disparará el TWDT.
+3.  Para sincronización productor/consumidor entre tasks, preferir `QueueHandle_t` (`xQueueCreate` + `xQueueSend/Receive`) frente a flags atómicos. `portMUX_TYPE` queda reservado a regiones críticas cortas (estilo `GOLConfig`, ver `core-shared-state.instructions.md`).
+
+### 11.4 Watchdogs — taxonomía completa
+ESP32-S3 expone **tres** clases de watchdog. Conviene saber cuál cubre qué:
+*   **Task WDT (TWDT)**: detecta tasks que no ceden CPU. Es el que `WatchdogHAL` alimenta desde `loop()`. Configurable.
+*   **Interrupt WDT (IWDT)**: detecta ISRs que tardan demasiado (> 300 ms por defecto). No se "alimenta" — se previene escribiendo ISRs cortas. Si una pantalla nueva cuelga sin reset por TWDT, sospechar IWDT y revisar handlers de timer / GPIO.
+*   **RTC WDT**: cubre el bootloader y los primeros milisegundos antes de que el firmware tome control. Si el panel del LED rojo se enciende pero no llegan logs, posible RTC WDT durante early boot.
+
+Referencia: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/system/wdts.html>.
+
+### 11.5 RF Coexistence — Wi-Fi + BLE
+Wi-Fi STA y BLE comparten radio. **BLE retirado en F1** — el problema de coexistencia ya no aplica. Si se reactiva BLE (ver skill `ble-input`), aplicar:
+*   `WiFi.setSleep(WIFI_PS_NONE)` durante operaciones BLE críticas (connect, scan denso). Trade-off: ~30-40 mA más de consumo.
+*   No mantener escaneo BLE activo > 5 s consecutivos.
+
+Referencia: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-guides/coexist.html>. Aplicación práctica detallada en skill `ble-input`.
+
+### 11.6 Diagnóstico de fallos fatales (Core Dump + JTAG built-in)
+*   **`esp_reset_reason()`**: ya en uso en `BootOrchestrator`. No prescindir.
+*   **Backtrace decoder**: para decodificar PCs de un panic capturado por `monitor.ps1`:
+    ```powershell
+    & "$env:USERPROFILE\.platformio\packages\toolchain-xtensa-esp-elf\bin\xtensa-esp32s3-elf-addr2line.exe" `
+        -pfiaC -e "C:\Users\egavi\pio_temp_build\ESP32S3-TFT_Framework\.pio\build\esp32-s3-devkitc-1\firmware.elf" `
+        0x40080d3a 0x40080d70
+    ```
+*   **Core Dump opt-in** (no activado por defecto): añadir a `platformio.ini`
+    ```ini
+    build_flags = -DCONFIG_ESP_COREDUMP_ENABLE=1 -DCONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=1
+    ```
+    Requiere reservar partición `coredump` en `partitions.csv`. Solo activar en sesiones de debug profundo.
+*   **JTAG built-in (USB-Serial/JTAG nativo del S3)**: el ESP32-S3 trae JTAG sin hardware externo. PlatformIO lo soporta:
+    ```ini
+    debug_tool = esp-builtin
+    debug_init_break = tbreak setup
+    ```
+    Permite breakpoints reales en panics no capturables por logs (cuelgues silenciosos en early boot, IWDT). Requiere driver USB libusb-win32 instalado.
+
+Referencia: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-guides/fatal-errors.html>, <https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-guides/jtag-debugging/index.html>.
+
+### 11.7 ESP Timer (alternativa a `hw_timer_t`)
+Para timers periódicos no críticos (refrescos UI, samplers de telemetría), `esp_timer` es más liviano y no consume un timer hardware:
+```cpp
+esp_timer_create_args_t cfg = { .callback = &onTick, .arg = nullptr,
+                                .dispatch_method = ESP_TIMER_TASK, .name = "ui_tick" };
+esp_timer_handle_t h;
+esp_timer_create(&cfg, &h);
+esp_timer_start_periodic(h, 1000000);   // µs
+```
+El callback corre en una task de prioridad alta — sigue aplicando IRAM_ATTR y no bloquear.
 
 ---
 

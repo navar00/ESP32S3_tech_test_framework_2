@@ -23,7 +23,7 @@ Genera un dump estructurado del estado actual del proyecto **ESP32S3-TFT Framewo
   - `NetService`, `TimeService`, `GeoService`, `WebService`.
 
 ### 4. Tamaño build (último log disponible)
-- Leer `C:\Users\egavi\pio_temp_build\TechTest_v2\.logs\build_latest.txt`:
+- Leer `C:\Users\egavi\pio_temp_build\ESP32S3-TFT_Framework\.logs\build_latest.txt`:
   - Línea `RAM:` → uso estático.
   - Línea `Flash:` → tamaño firmware.
 

@@ -2,7 +2,7 @@ $ErrorActionPreference = "Continue"
 
 # Configuration
 $SourceDir = $PSScriptRoot
-$BuildDir = "C:\Users\egavi\pio_temp_build\TechTest_v2"
+$BuildDir = "C:\Users\egavi\pio_temp_build\ESP32S3-TFT_Framework"
 $EnvName = "esp32-s3-devkitc-1"
 
 # Logs live next to the build cache (outside OneDrive). Timestamped + alias to latest.
@@ -13,7 +13,7 @@ $LogFile = Join-Path $LogDir "build_$LogStamp.txt"
 $LogLatest = Join-Path $LogDir 'build_latest.txt'
 
 Write-Host ""
-Write-Host "=== BUILD ESP32S3 Tech Test ===" -ForegroundColor Cyan
+Write-Host "=== BUILD ESP32S3-TFT Framework ===" -ForegroundColor Cyan
 Write-Host "Source: $SourceDir"
 Write-Host "Build:  $BuildDir"
 Write-Host "Log:    $LogFile"

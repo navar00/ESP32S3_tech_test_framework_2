@@ -1,4 +1,4 @@
-# TechTest v2 — Instrucciones base de Copilot
+# ESP32S3-TFT Framework — Instrucciones base de Copilot
 
 Proyecto: **ESP32-S3 Engineering Sandbox "Virtuoso Edition"** (PlatformIO + Arduino).
 **No cargues `README.md` por defecto**: es la especificación viva (~38 KB). Para detalle, invoca la skill aplicable o lee la sección concreta (`README.md §X`).
@@ -6,8 +6,8 @@ Proyecto: **ESP32-S3 Engineering Sandbox "Virtuoso Edition"** (PlatformIO + Ardu
 ## Stack y arquitectura
 - **MCU**: ESP32-S3 DevKitC-1, 16 MB flash, 240 MHz. **PSRAM deshabilitada** (`platformio.ini` la tiene comentada).
 - **Capas** (estricto, sin saltos):
-  1. `src/hal/` — HAL singleton (DisplayHAL, LedHAL, WatchdogHAL, StorageHAL, InputHAL).
-  2. `src/core/` — Lógica pura: `Logger`, `ScreenManager`, `BootOrchestrator`, `Config`, `GOLConfig` (estado compartido), `WatchdogManager`.
+  1. `src/hal/` — HAL singleton (DisplayHAL, LedHAL, WatchdogHAL, StorageHAL).
+  2. `src/core/` — Lógica pura: `Logger`, `ScreenManager`, `BootOrchestrator`, `Config`, `GOLConfig` (estado compartido).
   3. `src/services/` — `NetService`, `TimeService`, `GeoService`, `WebService`.
   4. `src/screens/` — Implementaciones de `IScreen` (Strategy). Helper `BaseSprite` con degradación 16→8→4 bpp.
 - **Boot**: `BootOrchestrator::run()` → WiFi → GeoIP → NTP → WebService → Ready.
@@ -35,7 +35,7 @@ Proyecto: **ESP32-S3 Engineering Sandbox "Virtuoso Edition"** (PlatformIO + Ardu
 - Si causa de reset fue WDT/Panic, parpadeo rojo 2 s antes de arrancar.
 
 ## Build y deploy (Windows / OneDrive)
-- **Compilar**: `./build.ps1` → copia a `C:\Users\egavi\pio_temp_build\TechTest_v2` (preserva `.pio/`), logs en `<BuildDir>\.logs\build_latest.txt` (+ timestamped, rotación 10).
+- **Compilar**: `./build.ps1` → copia a `C:\Users\egavi\pio_temp_build\ESP32S3-TFT_Framework` (preserva `.pio/`), logs en `<BuildDir>\.logs\build_latest.txt` (+ timestamped, rotación 10).
 - **Subir**: `./upload.ps1` (no recompila, reutiliza `firmware.bin`), logs en `<BuildDir>\.logs\upload_latest.txt`.
 - **Monitor serie**: `./monitor.ps1 [-Port COMx] [-Baud 115200]` → logs en `<BuildDir>\.logs\monitor_latest.log` (+ timestamped, rotación 10). Útil para `runtime-debug`.
 - Ambos scripts excluyen `.pio .git .vscode *.ps1` al copiar.
@@ -53,14 +53,14 @@ Proyecto: **ESP32-S3 Engineering Sandbox "Virtuoso Edition"** (PlatformIO + Ardu
 - Patrón **Split-Payload**: HTML y JS en blobs PROGMEM independientes < 5 KB cada uno.
 
 ## BLE
-- Coexisten **Bluepad32** (`InputHAL`, gamepads) y **BLEDevice** Arduino (`ScreenBLEScan`).
-- **No** llamar `BLEDevice::deinit(true)` en runtime → panic en re-init.
-- `BLEClient::connect()` es bloqueante > 8 s → siempre en task pinned a Core 0.
+- **Retirado en F1** (sin gamepads, sin scan). El framework usa arduino-esp32 stock; no se enlaza ni Bluedroid ni NimBLE.
+- Si se reintroduce, preferir **NimBLE-Arduino** (`h2zero/NimBLE-Arduino`) sobre el `BLEDevice` Bluedroid histórico.
+- Regla heredada vigente si se reactiva: **no** llamar `BLEDevice::deinit(true)` en runtime → panic en re-init.
 
 ## Skills disponibles para invocar
 - `tft-screen` — crear/editar pantallas (IScreen + BaseSprite).
 - `webservice-http` — endpoints, GOLConfig, restricciones TCP.
-- `ble-input` — Bluepad32 / BLE scan / dual stack.
+- `ble-input` — guía de re-introducción BLE/HID (retirado del binario en F1).
 - `runtime-debug` — panics, WDT resets, heap, parsear `monitor_latest.log`.
 - `iteration-close` — cerrar iteración, changelog, sync README.
 - `git-workflow` — commits, tags, release, recovery.

@@ -7,7 +7,7 @@
 - **Name:** ESP32S3 Tech Test Framework v2 — *Engineering sandbox*.
 - **Hardware target:** ESP32-S3 Lolin S3 Pro + ILI9341 240x320 (HSPI 27 MHz).
 - **PlatformIO board ID:** `esp32-s3-devkitc-1` (mantenido a propósito; el variant `lolin_s3` colisiona con los macros de pines de TFT_eSPI).
-- **Stack:** PlatformIO + Arduino (Bluepad32 fork). PSRAM **deshabilitada**.
+- **Stack:** PlatformIO + Arduino-ESP32 (stock). PSRAM **deshabilitada**. BLE/Bluepad32 retirados.
 - **Architecture:** 4 capas estrictas — `src/hal/` → `src/core/` → `src/services/` → `src/screens/`.
 
 ## How to talk to this project (agent contract)
@@ -30,7 +30,7 @@
 |---|---|
 | `tft-screen` | Crear/editar `IScreen` + `BaseSprite` |
 | `webservice-http` | Endpoints HTTP, GOLConfig, restricciones TCP |
-| `ble-input` | Bluepad32 / BLE scan / dual stack |
+| `ble-input` | Re-introducir BLE/HID si vuelve a hacer falta (retirado en F1) |
 | `runtime-debug` | Panics, WDT, heap, captura serie |
 | `iteration-close` | Cerrar iteración, changelog, sync README |
 | `git-workflow` | Commits, tags, release, recovery |
@@ -59,7 +59,7 @@
 ## Anti-patrones (PROHIBIDOS)
 - `git push --force` sobre `main`.
 - `git commit --amend` sobre commits ya pusheados.
-- `BLEDevice::deinit(true)` en runtime (panic en re-init).
+- `BLEDevice::deinit(true)` en runtime (panic en re-init — vigente si se reintroduce BLE).
 - `sendContent()` o chunked encoding en `WebService`.
 - Sustituir el board ID por `lolin_s3` (rompe TFT_eSPI).
 - Activar PSRAM sin verificar; el sandbox la mantiene OFF.

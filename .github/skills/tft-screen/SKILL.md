@@ -1,9 +1,9 @@
 ---
 name: tft-screen
-description: "Use when creating, editing or registering a new TFT screen in TechTest v2 (ESP32-S3 ILI9341 240x320). Triggers: 'nueva pantalla', 'crear pantalla TFT', 'IScreen', 'BaseSprite', 'sprite 8bpp', 'retro terminal UI', 'registrar en ScreenManager', 'fillTriangle agujas', 'paleta 332'. Provides exact IScreen signature, BaseSprite usage with graceful 16→8→4 bpp degradation, retro green UI standard, and registration in main.cpp."
+description: "Use when creating, editing or registering a new TFT screen in ESP32S3-TFT Framework (ESP32-S3 ILI9341 240x320). Triggers: 'nueva pantalla', 'crear pantalla TFT', 'IScreen', 'BaseSprite', 'sprite 8bpp', 'retro terminal UI', 'registrar en ScreenManager', 'fillTriangle agujas', 'paleta 332'. Provides exact IScreen signature, BaseSprite usage with graceful 16→8→4 bpp degradation, retro green UI standard, and registration in main.cpp."
 ---
 
-# Skill: TFT Screen (TechTest v2)
+# Skill: TFT Screen (ESP32S3-TFT Framework)
 
 ## Cuándo aplica
 Crear o modificar archivos en `src/screens/` que implementen `IScreen` para el TFT ILI9341 240×320.

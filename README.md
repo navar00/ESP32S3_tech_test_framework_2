@@ -12,13 +12,12 @@ El sistema abandona el tradicional "Spaghetti Code" de Arduino en favor de una a
 1.  **Capa Drivers (HAL)**: (`/src/hal`)
     *   `DisplayHAL`: Singleton que encapsula la librería `TFT_eSPI`. Abstrae la inicialización del bus SPI y la gestión de la retroiluminación.
     *   `LedHAL`: Control abstracto del LED RGB (NeoPixel).
-    *   `InputHAL`: Wrapper para **Bluepad32**. Gestiona la pila Bluetooth y los eventos de Gamepads. Implementa stubs críticos para evitar crashes por callbacks nulos.
+    *   `WatchdogHAL`: Wrapper del TWDT con dos timeouts (8 s boot, 3 s runtime).
+    *   `StorageHAL`: NVS — boot counter persistente, geo cache.
 2.  **Capa Core**: (`/src/core`)
     *   `ScreenManager`: Orquestador del ciclo de vida de la aplicación.
     *   `BootOrchestrator`: Secuencia de arranque con UI de progreso (WiFi → GeoIP → NTP → WebService).
     *   `Logger`: Sistema de trazas centralizado.
-    *   `WatchdogManager` / `WatchdogHAL`: Wrappers del TWDT con dos timeouts (8 s boot, 3 s runtime).
-    *   `StorageHAL`: NVS — boot counter persistente, útil para detectar reset-loops.
     *   `GOLConfig`: Estado compartido entre TFT (`ScreenGameOfLife`) y `WebService` con protección `portMUX_TYPE` (patrón replicable para futuros estados configurables vía web).
 3.  **Capa Servicios**: (`/src/services`)
     *   `TimeService`: Singleton NTP con sincronización automática (`pool.ntp.org`, `time.nist.gov`). Expone `getTimeParts()`, `getDateParts()`, countdown hasta resync.
@@ -32,8 +31,8 @@ El sistema abandona el tradicional "Spaghetti Code" de Arduino en favor de una a
     *   `ScreenAnalogClock`: Reloj analógico (mitad izq.) + Calendario mensual con caja roja en día actual (mitad der.) - *[Activo]*.
     *   `ScreenFlipClock`: Reloj estilo "flip clock" con dígitos 7-segmentos custom via `fillRect`. HH:MM en paneles grandes, `:SS` y countdown NTP en footer - *[Activo]*.
     *   `BootConsoleScreen`: Pantalla de arranque con barra vertical de progreso (izq.) y log incremental (der.) - *[Boot]*.
-    *   `ScreenBLEScan`: Radar BLE con gestión de energía (WiFi Toggle) - *[Latente]*.
-    *   `ScreenGamepad`: Monitor HID BLE (Modo Explorador de Servicios) - *[Activo]*.
+
+> **BLE/Gamepad** retirados en F1. Si se reintroduce, ver skill `ble-input` (recomendación: NimBLE-Arduino).
 
 ### 1.2 Estructura del Proyecto
 ```text
@@ -63,7 +62,7 @@ El sistema abandona el tradicional "Spaghetti Code" de Arduino en favor de una a
 │   │   └── ScreenManager # State Machine & Event Dispatcher
 │   ├── hal/              # Abstracción de Hardware
 │   │   ├── Hal.h         # Facade para inclusions
-│   │   └── ...           # Implementaciones (Display, Led, Input, Watchdog, Storage)
+│   │   └── ...           # Implementaciones (Display, Led, Watchdog, Storage)
 │   ├── services/         # Servicios de Red y Tiempo
 │   │   ├── TimeService   # NTP sync + getTimeParts/getDateParts
 │   │   ├── NetService    # WiFi manager
@@ -77,9 +76,7 @@ El sistema abandona el tradicional "Spaghetti Code" de Arduino en favor de una a
 │       ├── ScreenAnalogClock # Reloj Analógico + Calendario Mensual
 │       ├── ScreenFlipClock   # Flip Clock 7-segmentos (HH:MM)
 │       ├── ScreenGameOfLife  # Conway's GoL (control vía Web Dashboard)
-│       ├── ScreenPalette     # Selector de paletas con preview
-│       ├── ScreenBLEScan     # Escáner BLE (Latente)
-│       └── ScreenGamepad     # Cliente BLE HID (Activo)
+│       └── ScreenPalette     # Selector de paletas con preview
 ```
 
 ---
@@ -156,7 +153,9 @@ Para cumplir con el principio **DRY (Don't Repeat Yourself)**, se implementa el 
 *   Primitivas de dibujo estandarizadas ("Retro Look").
 
 ### 3.4 Estándar de Identificación BLE
-El sistema debe clasificar activamente los dispositivos detectados:
+> **NOTA (F1)**: BLE retirado del binario. Conservado como referencia para futura reintroducción; ver skill `ble-input`.
+
+El sistema debía clasificar activamente los dispositivos detectados:
 *   **HID**: Service UUID `0x1812` o Appearance `960+`.
 *   **Audio**: Service UUID `0x180E`/`0x110B`.
 *   **Log Format**: `[BLE] Found: <MAC> | RSSI: <RSSI> | Nature: <TYPE> | Name: <NAME>`
@@ -239,7 +238,7 @@ Se han incluido scripts de PowerShell en la raíz del proyecto para facilitar el
 *   **Log detallado**: `<BuildDir>\.logs\upload_<timestamp>.txt` (+ alias `upload_latest.txt`). Contiene toda la salida del proceso de flashing y verificación.
 *   **Monitor Serie**: Se abre automáticamente tras un upload exitoso para capturar los logs de arranque del ESP32.
 
-**Ficheros de Log generados** (en `C:\Users\egavi\pio_temp_build\TechTest_v2\.logs\`, fuera de OneDrive, rotación automática de los 10 más recientes):
+**Ficheros de Log generados** (en `C:\Users\egavi\pio_temp_build\ESP32S3-TFT_Framework\.logs\`, fuera de OneDrive, rotación automática de los 10 más recientes):
 | Fichero | Contenido | Cuándo consultar |
 | :--- | :--- | :--- |
 | `build_latest.txt` / `build_<timestamp>.txt` | Salida completa del compilador | Warnings, errores de linking, análisis de dependencias |
@@ -302,7 +301,8 @@ Para usuarios avanzados usando terminal PowerShell:
 ## 6. Optimización & Rendimiento (Post-Compilación)
 Tras el análisis estático y de compilación del 26/01/2026, se aplicaron mejoras de "Zero-Allocation":
 
-### 6.1 Optimización de Heap en Loops Críticos (ScreenBLE)
+### 6.1 Optimización de Heap en Loops Críticos (ScreenBLE — histórico)
+> **NOTA (F1)**: pantalla retirada. Patrón conservado como referencia.
 Se detectó una alta presión en el Heap debido a la creación de objetos `std::string` temporales dentro del bucle de renderizado de resultados BLE.
 **Solución**:
 *   Reemplazo de `substr()` (que reserva nueva memoria) por aritmética de punteros `char*`.
@@ -312,7 +312,8 @@ Se detectó una alta presión en el Heap debido a la creación de objetos `std::
 ### 6.2 Eficiencia Gráfica (BaseSprite)
 Se ratifica el uso de `display.clear()` + Redraw completo como estrategia válida bajo el principio "Virtuoso". Aunque consume más ciclos que un "Partial Update", garantiza la eliminación de artefactos visuales (ghosting) sin complejidad de código adicional.
 
-### 6.3 Solución a Heap Fragmentation (El "Black Screen Bug")
+### 6.3 Solución a Heap Fragmentation (El "Black Screen Bug" — histórico)
+> **NOTA (F1)**: con BLE retirado el escenario ya no se reproduce. Patrón de Graceful Degradation en `BaseSprite` se mantiene.
 **Síntoma**: Al salir de la pantalla BLE (Heavy Load) y volver a Status, la pantalla se quedaba negra. Los logs muestran: `CRITICAL: Sprite Alloc Failed!`.
 **Diagnóstico Revalidado (26/01/2026)**:
 *   El Stack Bluetooth y la lista de resultados fragmentan severamente el Heap interno (SRAM).
@@ -331,7 +332,8 @@ Se ratifica el uso de `display.clear()` + Redraw completo como estrategia válid
 & "C:\Users\egavi\.platformio\penv\Scripts\platformio.exe" device monitor --environment esp32-s3-devkitc-1
 ```
 
-### 6.4 Estabilidad crítica (Watchdog & Async BLE)
+### 6.4 Estabilidad crítica (Watchdog & Async BLE — histórico)
+> **NOTA (F1)**: BLE retirado. Patrón `xTaskCreatePinnedToCore(... Core 0)` sigue siendo la regla para CUALQUIER operación bloqueante > 50 ms.
 **Problema**: La conexión vía `BLEClient::connect()` es una operación bloqueante que puede superar los 8 segundos (Timeout por defecto). En el ESP32, realizar tareas bloqueantes en el Loop Principal impide refrescar el `Task Watchdog Timer (TWDT)`, provocando reinicios automáticos (Reset loop) a nivel hardware.
 
 **Solución (ScreenGamepad)**:
@@ -360,7 +362,7 @@ Se ratifica el uso de `display.clear()` + Redraw completo como estrategia válid
 **Problema**: Cada compilación tardaba ~100s porque `build.ps1` borraba todo el directorio temporal (incluyendo la caché `.pio`), y `upload.ps1` recompilaba todo porque apuntaba al directorio fuente en OneDrive.
 
 **Solución**:
-*   `build.ps1`: Copia solo los ficheros fuente al directorio temporal (`C:\Users\egavi\pio_temp_build\TechTest_v2`) preservando la carpeta `.pio` entre compilaciones.
+*   `build.ps1`: Copia solo los ficheros fuente al directorio temporal (`C:\Users\egavi\pio_temp_build\ESP32S3-TFT_Framework`) preservando la carpeta `.pio` entre compilaciones.
 *   `upload.ps1`: Usa `--project-dir "$BuildDir"` apuntando al mismo directorio temporal donde ya existe el `firmware.bin` compilado. Verifica su existencia antes de intentar upload.
 *   **Resultado**: Build incremental ~18-30s (vs ~100s), Upload ~33s sin recompilación (vs ~150s).
 
@@ -491,6 +493,48 @@ lS().then(function(){ return lG() }).then(function(){ return lP() });
 
 ## 7. Changelog
 
+### v0.7.0 — 2026-04-27
+**Retirada de Bluepad32 + refactor C++ moderno (toolchain stock, −43 KB RAM, −255 KB Flash):**
+
+Iteración estructural en tres fases. Migra del fork `ricardoquesada/esp32-arduino-lib-builder/4.1.0` (Bluepad32) al `framework-arduinoespressif32` **stock de Espressif** y aplica un refactor de bajo nivel en HAL/screens.
+
+**Phase A — Sprites con feedback de heap (`BaseSprite.h`):**
+*   `heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)` antes de cada `createSprite()` → log `[GFX] Heap before <stage>: largest=Xkb total=Ykb`.
+*   Skip-to-8bpp inteligente: si el bloque contiguo más grande es < 16 bpp requerido pero ≥ 8 bpp, salta directamente a 8 bpp en vez de gastar un `createSprite` fallido.
+*   La degradación 16 → 8 → 4 bpp se conserva como red de seguridad final.
+
+**Phase B — Timer y Watchdog modernos:**
+*   `main.cpp` migra del wrapper Arduino legacy `hw_timer_t / timerBegin / timerAlarmWrite / IRAM_ATTR ISR` a `esp_timer` (callback en `esp_timer_task`, ahorra ~5 KB Flash y elimina warnings).
+*   `core/WatchdogManager.h` eliminado (era envoltorio legacy duplicado de `hal/WatchdogHAL`).
+*   `WatchdogHAL` mantiene la firma legacy `esp_task_wdt_init(seconds, panic)` con chequeo `esp_err_t` + `esp_err_to_name()`. La API moderna (`esp_task_wdt_config_t` / `esp_task_wdt_reconfigure`) **no compila** vía la capa Arduino ni con Bluepad32 ni con arduino-esp32 v3.x stock — anotado en el código.
+
+**Phase C — `StorageHAL` con error handling real:**
+*   `begin()` ahora devuelve `bool` y guarda `_ready` para que el resto del HAL falle rápido si NVS no inicializó.
+*   Todas las llamadas `Preferences::*` reportan errores con `esp_err_to_name()` en lugar de "Error" silenciosos.
+*   API legacy retirada: `setSafeModeFlag` / `getSafeModeFlag` / `isQuickReboot` (no usadas en el binario actual).
+*   TAG canónico: `STG`. Comentario nuevo en `Config.h`: NVS namespace + key cap real = 15 bytes (no 16).
+
+**F1 — Bluepad32 retirado del binario:**
+*   `platformio.ini` sin `platform_packages` (vuelve al `framework-arduinoespressif32` oficial de Espressif).
+*   Borrados: `src/hal/InputHAL.{h,cpp}`, `src/screens/ScreenGamepad.h`, `src/screens/ScreenBLEScan.h`, `src/screens/ScreenBLE.h.disabled`.
+*   `src/CMakeLists.txt` sin `REQUIRES bluepad32`. `Hal.h` sin `InputHAL.h`. `main.cpp` sin `InputHAL::init/update` ni registro de `ScreenGamepad`. `ScreenStatus` sin log `MAC BT`.
+*   Decisión registrada (skill `ble-input`): si vuelve a hacer falta BLE genérico → **NimBLE-Arduino** (`h2zero/NimBLE-Arduino`) sobre stock; HID estándar → `esp_hidh` + NimBLE; gamepads con handshakes propietarios (Switch Pro, DualSense rumble, Wii) → reactivar el fork (Opción A).
+
+**F3 — Sync documental masivo:**
+*   `README.md` §1.1 (HAL list y screens list), tree, §3.4/§6.1/§6.3/§6.4 marcadas `(histórico)` con nota F1.
+*   `AGENTS.md` stack actualizado a "Arduino-ESP32 (stock). PSRAM deshabilitada. BLE/Bluepad32 retirados".
+*   `DevGuidelines.md` TAGs canónicos (sin `BP32` / `BLE`, añadido `STG`); §10 RF coexistence y §7.1 ejemplo `ScreenGamepad` marcados como histórico.
+*   `.github/copilot-instructions.md` sección BLE reescrita en 3 bullets ("Retirado en F1", "Si se reintroduce → NimBLE-Arduino", regla heredada `BLEDevice::deinit(true)`).
+*   `.github/instructions/hal.instructions.md` sin mención a Bluepad32 ni stubs de InputHAL.
+*   Skill `ble-input/SKILL.md` reescrita como **guía de re-introducción** con árbol de decisión (Opción A Bluepad32 / Opción B NimBLE-Arduino / Opción C esp_hidh).
+*   Skill `build-pipeline/SKILL.md` actualizada (sin `platform_packages`).
+*   Skill + script `scaffold-new-project` (`SKILL.md` + `scaffold.ps1`): presets `ble-input` y `ble-scan` retirados del `ValidateSet`, mapping de archivos y tabla de `platformio.ini`. Ahora la skill `ble-input` se copia siempre (es guía, no código).
+
+**Resultado de build (esp32-s3-devkitc-1, build limpio, sin warnings nuevos):**
+*   RAM: **14.3 %** (46 844 B / 327 680 B) — **−43.3 KB** vs v0.6.2 (era 27.5 %).
+*   Flash: **32.1 %** (1 072 657 B / 3 342 336 B) — **−254.5 KB** vs v0.6.2 (era 39.7 %).
+*   Stack BT: ningún stack BLE enlazado en el binario (ni Bluedroid ni NimBLE).
+
 ### v0.6.2 — 2026-04-26
 **Toolchain de agentes IA y CI (sin cambios de firmware):**
 
@@ -502,7 +546,7 @@ Iteración 100 % dedicada a infraestructura de desarrollo asistido por IA y vali
 *   `skills/` — 8 skills especializadas con triggers semánticos:
     *   `tft-screen` — crear/editar `IScreen` + `BaseSprite`.
     *   `webservice-http` — endpoints, restricciones TCP, GOLConfig.
-    *   `ble-input` — Bluepad32 / BLE scan / dual stack.
+    *   `ble-input` — guía de re-introducción BLE/HID (retirado del binario en F1).
     *   `runtime-debug` — panics, WDT, heap, parsing de `monitor_latest.log`.
     *   `iteration-close` — bump versión, changelog, sync README, gates de calidad.
     *   `git-workflow` — commits, tags, release, recovery.

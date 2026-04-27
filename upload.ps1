@@ -1,4 +1,4 @@
-# Upload & Monitor script for ESP32S3 Tech Test
+# Upload & Monitor script for ESP32S3-TFT Framework
 # Reuses build artifacts from build.ps1 (no recompilation needed)
 # Usage: ./upload.ps1
 
@@ -6,7 +6,7 @@ $ErrorActionPreference = "Continue"
 
 $PIO = "$env:USERPROFILE\.platformio\penv\Scripts\platformio.exe"
 $ProjectDir = $PSScriptRoot
-$BuildDir = "C:\Users\egavi\pio_temp_build\TechTest_v2"
+$BuildDir = "C:\Users\egavi\pio_temp_build\ESP32S3-TFT_Framework"
 $EnvName = "esp32-s3-devkitc-1"
 $FirmwareBin = "$BuildDir\.pio\build\$EnvName\firmware.bin"
 
@@ -18,7 +18,7 @@ $LogFile = Join-Path $LogDir "upload_$LogStamp.txt"
 $LogLatest = Join-Path $LogDir 'upload_latest.txt'
 
 Write-Host ""
-Write-Host "=== UPLOAD ESP32S3 Tech Test ===" -ForegroundColor Cyan
+Write-Host "=== UPLOAD ESP32S3-TFT Framework ===" -ForegroundColor Cyan
 Write-Host "Build:  $BuildDir"
 Write-Host "Log:    $LogFile"
 Write-Host ""

@@ -1,9 +1,9 @@
 ---
 name: runtime-debug
-description: "Use when diagnosing runtime issues in TechTest v2: panics, watchdog resets, heap fragmentation, sprite allocation failures, brownouts, BLE re-init crashes, NTP sync failures, or any abnormal boot reason. Triggers: 'panic ESP32', 'watchdog reset', 'WDT', 'esp_reset_reason', 'Sprite Alloc Failed', 'heap fragmentation', 'black screen bug', 'boot counter NVS', 'brownout', 'StorageHAL'."
+description: "Use when diagnosing runtime issues in ESP32S3-TFT Framework: panics, watchdog resets, heap fragmentation, sprite allocation failures, brownouts, BLE re-init crashes, NTP sync failures, or any abnormal boot reason. Triggers: 'panic ESP32', 'watchdog reset', 'WDT', 'esp_reset_reason', 'Sprite Alloc Failed', 'heap fragmentation', 'black screen bug', 'boot counter NVS', 'brownout', 'StorageHAL'."
 ---
 
-# Skill: Runtime Debug (TechTest v2)
+# Skill: Runtime Debug (ESP32S3-TFT Framework)
 
 ## Cuándo aplica
 Diagnosticar fallos en runtime: panics, resets inesperados, pantalla negra, falta de memoria, problemas de boot.
@@ -69,7 +69,7 @@ Diagnosticar fallos en runtime: panics, resets inesperados, pantalla negra, falt
   ```
   Para que el agente analice un panic reciente:
   ```powershell
-  Get-Content 'C:\Users\egavi\pio_temp_build\TechTest_v2\.logs\monitor_latest.log' -Tail 80
+  Get-Content 'C:\Users\egavi\pio_temp_build\ESP32S3-TFT_Framework\.logs\monitor_latest.log' -Tail 80
   ```
 - Filtrar:
   ```powershell
@@ -85,3 +85,75 @@ Diagnosticar fallos en runtime: panics, resets inesperados, pantalla negra, falt
 - §3.6 WDT 8 s → ajustar a `Config::WDT_TIMEOUT_LOOP`.
 - §6.3 PSRAM activa → marcar como "no aplicable, deshabilitada".
 - TAGs documentados con padding 3-5 chars vs reales (`WebSrv`, `TimeService`, `BOOT_UI` no cumplen) → unificar o aceptar.
+
+---
+
+## Runbook ESP-IDF (APIs invocables desde Arduino)
+
+Ver `DevGuidelines.md §11` para el contrato general. Aquí sólo las recetas operativas para diagnóstico.
+
+### Heap snapshot (antes de cualquier `new` grande)
+```cpp
+#include "esp_heap_caps.h"
+size_t f = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+size_t b = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+Logger::log("HEAP", "free=%u largest=%u (need=%u)", f, b, requested);
+```
+Si `largest < requested` → no intentar 16 bpp; saltar directamente a 8 bpp en `BaseSprite`. Es la mejora natural para evitar el ciclo "fail → log → retry" actual.
+
+Para inventariar todos los pools (interno, DMA, PSRAM si la hubiera):
+```cpp
+heap_caps_print_heap_info(MALLOC_CAP_INTERNAL);
+```
+
+### Stack watermark de tasks
+Tras un ciclo representativo de la task BLE/HTTP, loggear:
+```cpp
+UBaseType_t hwm = uxTaskGetStackHighWaterMark(NULL);
+Logger::log("BLE", "stack remaining=%u bytes", hwm * sizeof(StackType_t));
+```
+Si < 512 bytes → ampliar el `usStackDepth` al alocar la task. Si > 4 KB sobrantes → reducir para liberar heap.
+
+### Registrar una task pinned en el TWDT
+Cuando una task Core 0 puede tardar > 3 s (BLE connect, HTTPS GET futuro):
+```cpp
+esp_task_wdt_add(NULL);
+while (working) {
+    doStep();
+    esp_task_wdt_reset();
+}
+esp_task_wdt_delete(NULL);
+vTaskDelete(NULL);
+```
+Sin esto la task puede colgarse y el TWDT global no la cazará.
+
+### Decodificar un panic capturado (`monitor_latest.log`)
+Localizar líneas `Backtrace: 0x40080d3a:0x3ffb1f80 0x40080d70:...` y resolver con `addr2line`:
+```powershell
+$elf = "C:\Users\egavi\pio_temp_build\ESP32S3-TFT_Framework\.pio\build\esp32-s3-devkitc-1\firmware.elf"
+$addr2line = "$env:USERPROFILE\.platformio\packages\toolchain-xtensa-esp-elf\bin\xtensa-esp32s3-elf-addr2line.exe"
+& $addr2line -pfiaC -e $elf 0x40080d3a 0x40080d70 0x40080dac
+```
+Salida: fichero + línea + nombre de función. Imprescindible para diagnosticar `LoadProhibited`, `StoreProhibited`, `IllegalInstruction`.
+
+### Core dump opt-in (sólo sesiones de debug profundo)
+Añadir temporalmente a `platformio.ini`:
+```ini
+build_flags = -DCONFIG_ESP_COREDUMP_ENABLE=1 -DCONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=1 -DCONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=1
+```
+Requiere partición `coredump,data,coredump,,64K` en `partitions.csv`. Tras un panic:
+```powershell
+& "$env:USERPROFILE\.platformio\penv\Scripts\platformio.exe" device monitor --filter esp32_exception_decoder
+```
+o extraer el dump con `espcoredump.py info_corefile`. **Recordar quitar los flags al cerrar la iteración** (ocupan flash y ralentizan el panic handler).
+
+### JTAG built-in (USB-Serial/JTAG del propio S3, sin hardware externo)
+Para cuelgues que no llegan al monitor serie (early boot, IWDT, deadlock silencioso):
+```ini
+; en platformio.ini, sólo durante debug
+debug_tool = esp-builtin
+debug_init_break = tbreak setup
+```
+Lanzar `Run → Start Debugging` desde VS Code (PlatformIO Debug). Requiere driver `libusb-win32` instalado vía Zadig la primera vez. Permite breakpoints reales y `info threads` para ver tasks FreeRTOS.
+
+Referencia: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-guides/jtag-debugging/index.html>.

@@ -1,9 +1,9 @@
 ---
 name: build-pipeline
-description: "Use when working with the build/upload pipeline of TechTest v2 on Windows + OneDrive: incremental builds, regenerating PalettesData.h, debugging build/upload scripts, or understanding why a clean build is slow. Triggers: 'build.ps1', 'upload.ps1', 'compilación incremental', 'pio_temp_build', 'PalettesData.h', 'OneDrive lentitud PlatformIO', 'compile_commands.json'."
+description: "Use when working with the build/upload pipeline of ESP32S3-TFT Framework on Windows + OneDrive: incremental builds, regenerating PalettesData.h, debugging build/upload scripts, or understanding why a clean build is slow. Triggers: 'build.ps1', 'upload.ps1', 'compilación incremental', 'pio_temp_build', 'PalettesData.h', 'OneDrive lentitud PlatformIO', 'compile_commands.json'."
 ---
 
-# Skill: Build Pipeline (TechTest v2)
+# Skill: Build Pipeline (ESP32S3-TFT Framework)
 
 ## Cuándo aplica
 - Modificar/depurar `build.ps1`, `upload.ps1`.
@@ -17,7 +17,7 @@ PlatformIO sobre OneDrive es lento e inestable: OneDrive sincroniza `.pio/` (cie
 | Variable | Ruta |
 |---|---|
 | Source (origen, OneDrive) | `c:\Users\egavi\OneDrive\Documents\PlatformIO\Projects\ESP32S3_tech_test_framework_2\` |
-| Build dir (fuera OneDrive) | `C:\Users\egavi\pio_temp_build\TechTest_v2\` |
+| Build dir (fuera OneDrive) | `C:\Users\egavi\pio_temp_build\ESP32S3-TFT_Framework\` |
 | PlatformIO env | `esp32-s3-devkitc-1` |
 
 ## `./build.ps1` — flujo
@@ -39,7 +39,7 @@ Tiempos esperados:
 5. Tiempo total: ~33 s sin recompilación (vs ~150 s si recompila).
 
 ## Logs (rotación + alias)
-Ubicación: `C:\Users\egavi\pio_temp_build\TechTest_v2\.logs\` (fuera de OneDrive).
+Ubicación: `C:\Users\egavi\pio_temp_build\ESP32S3-TFT_Framework\.logs\` (fuera de OneDrive).
 
 | Archivo | Contenido |
 |---|---|
@@ -51,12 +51,12 @@ Rotación automática: se conservan los **10 más recientes** de cada tipo; el r
 
 Para consultar el último log desde una skill:
 ```powershell
-Get-Content 'C:\Users\egavi\pio_temp_build\TechTest_v2\.logs\build_latest.txt' -Tail 40
+Get-Content 'C:\Users\egavi\pio_temp_build\ESP32S3-TFT_Framework\.logs\build_latest.txt' -Tail 40
 ```
 
 ## Si necesitas build totalmente limpio
 ```powershell
-Remove-Item -Recurse -Force "C:\Users\egavi\pio_temp_build\TechTest_v2\.pio"
+Remove-Item -Recurse -Force "C:\Users\egavi\pio_temp_build\ESP32S3-TFT_Framework\.pio"
 ./build.ps1
 ```
 
@@ -65,10 +65,10 @@ Remove-Item -Recurse -Force "C:\Users\egavi\pio_temp_build\TechTest_v2\.pio"
 - Configurado en `.vscode/c_cpp_properties.json`.
 - Si IntelliSense marca includes como rojos:
   ```powershell
-  Push-Location "C:\Users\egavi\pio_temp_build\TechTest_v2"
+  Push-Location "C:\Users\egavi\pio_temp_build\ESP32S3-TFT_Framework"
   platformio run -t compiledb
   Pop-Location
-  Copy-Item "C:\Users\egavi\pio_temp_build\TechTest_v2\compile_commands.json" .
+  Copy-Item "C:\Users\egavi\pio_temp_build\ESP32S3-TFT_Framework\compile_commands.json" .
   ```
 
 ## Regenerar `src/core/PalettesData.h`
@@ -87,7 +87,7 @@ Pasos:
 platform = espressif32
 board = esp32-s3-devkitc-1
 platform_packages =
-    framework-arduinoespressif32 @ https://github.com/ricardoquesada/esp32-arduino-lib-builder/releases/download/4.1.0/esp32-bluepad32-4.1.0.zip
+    ; framework-arduinoespressif32 stock (Espressif). Sin platform_packages.
     toolchain-xtensa-esp32s3 @ 12.2.0+20230208
 lib_deps =
     bodmer/TFT_eSPI
@@ -95,7 +95,7 @@ lib_deps =
     bblanchon/ArduinoJson
 lib_ignore = ESPAsyncTCP
 ```
-- El fork de Bluepad32 es necesario para que coexistan `Bluepad32.h` y `BLEDevice.h` (skill `ble-input`).
+- El fork de Bluepad32 fue retirado en F1; el framework usa arduino-esp32 stock. Si se reintroduce BLE, ver skill `ble-input`.
 - `lib_ignore = ESPAsyncTCP` evita conflictos con el `WebServer` síncrono usado.
 - PSRAM flags **comentadas** intencionalmente (ver skill `runtime-debug`).
 

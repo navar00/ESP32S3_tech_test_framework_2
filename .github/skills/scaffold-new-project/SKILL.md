@@ -22,15 +22,17 @@ Pregunta al usuario (usar `vscode_askQuestions` si está disponible):
 3. **`BUILD_DIR_NAME`** — nombre de la carpeta fuera de OneDrive. Default: derivar del nombre (ej. `Robot_v1`).
 4. **`FW_VERSION`** — default `0.1.0`.
 5. **Presets** (multi-select):
-   - [x] Core base (siempre incluido): `Logger`, `ScreenManager`, `BootOrchestrator`, `Config`, `WatchdogManager`, `WatchdogHAL`, `DisplayHAL`, `LedHAL`, `StorageHAL`, `IScreen`, `BaseSprite`, `BootConsoleScreen`, `ScreenStatus`.
+   - [x] Core base (siempre incluido): `Logger`, `ScreenManager`, `BootOrchestrator`, `Config`, `WatchdogHAL`, `DisplayHAL`, `LedHAL`, `StorageHAL`, `IScreen`, `BaseSprite`, `BootConsoleScreen`, `ScreenStatus`.
    - [ ] WiFi + NTP (`NetService`, `TimeService`, `GeoService`).
    - [ ] WebService dashboard (`WebService` + `GOLConfig` + plantilla DASH_HTML/JS reducida).
-   - [ ] BLE Input — Bluepad32 (`InputHAL` + fork en `platform_packages`).
-   - [ ] BLE Scan (`ScreenBLEScan` con `BLEDevice`).
    - [ ] Game of Life screen (`ScreenGameOfLife`).
    - [ ] Clocks (`ScreenAnalogClock` + `ScreenFlipClock`).
    - [ ] Palettes (`ScreenPalette` + `PalettesData.h` + `include/colores/`).
 6. **Inicializar git** (sí/no).
+7. **Registrar en multi-root workspace** (sí/no, default sí).
+   - Default: `C:\Users\egavi\OneDrive\Documents\PlatformIO\Projects\ESP32S3 WS.code-workspace`.
+   - Para desactivar: pasar `-SkipWorkspaceRegister` o `-WorkspaceFile ''`.
+   - Para usar otro fichero: pasar `-WorkspaceFile "<ruta>"`.
 
 ### Paso 2 — Ejecutar el script
 ```powershell
@@ -42,6 +44,11 @@ Pregunta al usuario (usar `vscode_askQuestions` si está disponible):
     -Presets @("wifi","web","gol","clocks","palettes") `
     -InitGit
 ```
+
+> Por defecto el script registra el nuevo proyecto en `ESP32S3 WS.code-workspace`
+> (carpeta padre de `Projects`). Crea un backup `<ws>.code-workspace.bak` antes de
+> modificar y respeta entradas existentes (idempotente: si ya existe la `path`,
+> no la duplica). Para omitir este paso: `-SkipWorkspaceRegister`.
 
 El script:
 1. Crea estructura de carpetas (`src/{core,hal,services,screens}`, `include`, `lib`, `test`, `aux_`).
@@ -57,10 +64,17 @@ El script:
 8. Genera `DevGuidelines.md` reducido (heredado).
 9. Genera `.github/copilot-instructions.md` adaptado al subset elegido.
 10. Copia skills reutilizables a `.github/skills/`:
-    - **Siempre**: `git-workflow`, `build-pipeline`, `runtime-debug`, `iteration-close`, `tft-screen`.
+    - **Siempre**: `git-workflow`, `build-pipeline`, `runtime-debug`, `iteration-close`, `tft-screen`, `ble-input` (guía de re-introducción).
     - Preset `web` → añade `webservice-http`.
-    - Presets `ble-input` o `ble-scan` → añade `ble-input`.
 11. Si `-InitGit`: `git init`, `git add -A`, primer commit.
+12. Si no se pasa `-SkipWorkspaceRegister`, registra el proyecto como nueva
+    entrada `folders[]` en el `.code-workspace` indicado (default
+    `ESP32S3 WS.code-workspace`):
+    - Calcula `path` relativo al directorio del workspace file (sin prefijo `.\`).
+    - `name` = `WorkspaceFolderName` si se pasó, si no `ProjectName`.
+    - Escribe UTF-8 sin BOM.
+    - Crea backup `<ws>.code-workspace.bak`.
+    - No-op si la `path` ya estaba presente.
 
 ### Paso 3 — Checklist post-scaffold (mostrar al usuario)
 1. `cd <PROJECT_PATH>`
@@ -70,6 +84,8 @@ El script:
 5. `./build.ps1` (la primera build será limpia ~100 s).
 6. `./upload.ps1`.
 7. Iterar añadiendo pantallas con la skill `tft-screen`.
+8. Si el script registró el proyecto en el `.code-workspace`, recargar VS Code
+   (Command Palette → *Workspaces: Reload Window*) para ver la nueva carpeta.
 
 ## Estructura de salida (sin presets opcionales)
 ```
@@ -93,7 +109,6 @@ El script:
 │   │   ├── Logger.h
 │   │   ├── ScreenManager.h
 │   │   ├── BootOrchestrator.{h,cpp}
-│   │   └── WatchdogManager.h
 │   ├── hal/
 │   │   ├── Hal.h
 │   │   ├── DisplayHAL.{h,cpp}
@@ -114,20 +129,18 @@ El script:
 ## Ajustes de `platformio.ini` por preset
 | Preset | Acción |
 |---|---|
-| BLE Input (Bluepad32) | Añadir bloque `platform_packages` con fork Quesada |
-| BLE Scan | Añadir `lib_deps` `ESP32 BLE Arduino` (si no ya implícito) |
 | WebService | Mantener `lib_ignore = ESPAsyncTCP` |
 | Palettes | Crear carpeta `include/colores/` vacía |
 
 ## Versionado del scaffold
-- El script versiona qué versión de TechTest v2 se usó como source en un comentario inicial del `README.md` generado: `<!-- scaffolded from TechTest v2 vX.Y.Z -->`. Leer la versión actual desde el changelog de TechTest v2 (sección §7).
+- El script versiona qué versión de ESP32S3-TFT Framework se usó como source en un comentario inicial del `README.md` generado: `<!-- scaffolded from ESP32S3-TFT Framework vX.Y.Z -->`. Leer la versión actual desde el changelog de ESP32S3-TFT Framework (sección §7).
 
 ## Antipatrones
-- Copiar el `README.md` v2 entero al nuevo proyecto: lo deja desfasado desde día 1.
+- Copiar el `README.md` del framework entero al nuevo proyecto: lo deja desfasado desde día 1.
 - Copiar `Config.h` con credenciales reales.
 - Heredar `pio_temp_build/` o `.pio/`.
 - Heredar `.vscode/tasks.json` con rutas absolutas del proyecto fuente.
-- Olvidar adaptar `BUILD_DIR_NAME` (causa colisión con build de TechTest v2).
+- Olvidar adaptar `BUILD_DIR_NAME` (causa colisión con build de ESP32S3-TFT Framework).
 
 ## Script
-Ver `scaffold.ps1` en este mismo directorio para la implementación. La sección "MANIFEST" al inicio del script lista qué archivos copiar por cada preset; mantener ese manifiesto sincronizado con cambios estructurales en TechTest v2.
+Ver `scaffold.ps1` en este mismo directorio para la implementación. La sección "MANIFEST" al inicio del script lista qué archivos copiar por cada preset; mantener ese manifiesto sincronizado con cambios estructurales en ESP32S3-TFT Framework.

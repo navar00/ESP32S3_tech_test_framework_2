@@ -1,6 +1,6 @@
 ---
 applyTo: "src/services/WebService.*"
-description: "Hard TCP/HTTP rules for the embedded WebServer in TechTest v2."
+description: "Hard TCP/HTTP rules for the embedded WebServer in ESP32S3-TFT Framework."
 ---
 
 # WebService — reglas locales

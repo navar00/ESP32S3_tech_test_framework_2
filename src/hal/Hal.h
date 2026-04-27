@@ -12,4 +12,3 @@
 #include "LedHAL.h"
 #include "WatchdogHAL.h"
 #include "StorageHAL.h"
-#include "InputHAL.h"

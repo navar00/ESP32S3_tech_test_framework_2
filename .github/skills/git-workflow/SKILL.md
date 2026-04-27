@@ -1,9 +1,9 @@
 ---
 name: git-workflow
-description: "Use when committing, pushing, tagging, or releasing in TechTest v2: writing commit messages, validating pre-commit hygiene, recovering from mistakes, or executing a release (commit + tag + push) on top of iteration-close. Triggers: 'commit', 'git push', 'mensaje de commit', 'qué subir', 'convención de commits', 'pre-commit', 'tag', 'release', 'cherry-pick', 'amend', 'undo last commit', 'revertir commit'."
+description: "Use when committing, pushing, tagging, or releasing in ESP32S3-TFT Framework: writing commit messages, validating pre-commit hygiene, recovering from mistakes, or executing a release (commit + tag + push) on top of iteration-close. Triggers: 'commit', 'git push', 'mensaje de commit', 'qué subir', 'convención de commits', 'pre-commit', 'tag', 'release', 'cherry-pick', 'amend', 'undo last commit', 'revertir commit'."
 ---
 
-# Skill: Git Workflow (TechTest v2)
+# Skill: Git Workflow (ESP32S3-TFT Framework)
 
 ## Cuándo aplica
 - Crear un commit (diario, intermedio, o de cierre de iteración).

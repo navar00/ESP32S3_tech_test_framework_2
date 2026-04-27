@@ -1,9 +1,9 @@
 ---
 name: webservice-http
-description: "Use when adding/modifying HTTP endpoints, handling the embedded WebServer, sharing state between TFT screens and the web dashboard, or hitting TCP buffer limits in TechTest v2. Triggers: 'WebService', 'endpoint HTTP', 'TCP 5744', 'ERR_CONTENT_LENGTH_MISMATCH', 'ERR_CONNECTION_RESET', 'PROGMEM dashboard', 'split-payload', 'GOLConfig', 'estado compartido TFT web', 'portMUX', 'cookie auth', 'PIN dashboard'. Encodes the hard-won constraints of ESP32-S3 single-threaded WebServer."
+description: "Use when adding/modifying HTTP endpoints, handling the embedded WebServer, sharing state between TFT screens and the web dashboard, or hitting TCP buffer limits in ESP32S3-TFT Framework. Triggers: 'WebService', 'endpoint HTTP', 'TCP 5744', 'ERR_CONTENT_LENGTH_MISMATCH', 'ERR_CONNECTION_RESET', 'PROGMEM dashboard', 'split-payload', 'GOLConfig', 'estado compartido TFT web', 'portMUX', 'cookie auth', 'PIN dashboard'. Encodes the hard-won constraints of ESP32-S3 single-threaded WebServer."
 ---
 
-# Skill: WebService HTTP + Shared State (TechTest v2)
+# Skill: WebService HTTP + Shared State (ESP32S3-TFT Framework)
 
 ## Cuándo aplica
 - Añadir/editar rutas en `src/services/WebService.{h,cpp}`.

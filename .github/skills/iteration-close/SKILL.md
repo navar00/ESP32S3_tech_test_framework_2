@@ -1,9 +1,9 @@
 ---
 name: iteration-close
-description: "Use when closing a development iteration in TechTest v2: bumping version, writing the changelog entry, validating that README/DevGuidelines match the code, and ensuring all hard rules pass before tagging. Triggers: 'cerrar iteración', 'changelog', 'release notes', 'bump versión', 'sincronizar README', 'antes de commit final'."
+description: "Use when closing a development iteration in ESP32S3-TFT Framework: bumping version, writing the changelog entry, validating that README/DevGuidelines match the code, and ensuring all hard rules pass before tagging. Triggers: 'cerrar iteración', 'changelog', 'release notes', 'bump versión', 'sincronizar README', 'antes de commit final'."
 ---
 
-# Skill: Iteration Close (TechTest v2)
+# Skill: Iteration Close (ESP32S3-TFT Framework)
 
 ## Cuándo aplica
 Antes de declarar terminada una iteración (bump de versión, commit final, opcional tag).

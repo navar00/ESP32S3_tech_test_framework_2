@@ -4,26 +4,27 @@
 #include "../core/Config.h"
 #include "../core/Logger.h"
 
-class StorageHAL {
+class StorageHAL
+{
 public:
-    static StorageHAL& getInstance();
-    void begin();
+    static StorageHAL &getInstance();
+
+    // Returns true if NVS opened successfully. Subsequent ops no-op if false.
+    bool begin();
+    bool isReady() const { return _ready; }
 
     void incrementBootCounter();
     uint32_t getBootCounter();
-    
-    void setSafeModeFlag(bool active);
-    bool getSafeModeFlag();
 
     void updateLastBootTime();
-    bool isQuickReboot(); // Detects if last reboot was < 60s ago
 
     // Geo Cache
-    void saveGeo(const String& tz, long offset);
-    bool loadGeo(String& tz, long& offset);
+    void saveGeo(const String &tz, long offset);
+    bool loadGeo(String &tz, long &offset);
 
 private:
     StorageHAL() = default;
     Preferences _prefs;
-    const char* TAG = "StorageHAL";
+    bool _ready = false;
+    static constexpr const char *TAG = "STG";
 };

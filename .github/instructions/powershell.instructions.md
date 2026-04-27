@@ -1,6 +1,6 @@
 ---
 applyTo: "**/*.ps1"
-description: "PowerShell conventions for build/upload scripts in TechTest v2."
+description: "PowerShell conventions for build/upload scripts in ESP32S3-TFT Framework."
 ---
 
 # PowerShell — reglas locales

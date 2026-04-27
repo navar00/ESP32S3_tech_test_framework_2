@@ -26,10 +26,22 @@
     Firmware version string written to Config.h. Default 0.1.0.
 
 .PARAMETER Presets
-    Array of optional presets. Valid values: wifi, web, ble-input, ble-scan, gol, clocks, palettes.
+    Array of optional presets. Valid values: wifi, web, gol, clocks, palettes.
 
 .PARAMETER InitGit
     If set, runs git init + first commit.
+
+.PARAMETER WorkspaceFile
+    Path to a VS Code multi-root .code-workspace file. After scaffolding, the new
+    project is added as a folder entry. Defaults to the shared ESP32S3 workspace.
+    Pass empty string '' or use -SkipWorkspaceRegister to disable.
+
+.PARAMETER WorkspaceFolderName
+    Display name (folders[].name) used inside the .code-workspace entry.
+    Defaults to $ProjectName.
+
+.PARAMETER SkipWorkspaceRegister
+    If set, skips registering the project in the .code-workspace file.
 
 .EXAMPLE
     .\scaffold.ps1 -ProjectName ESP32S3_robot_v1 `
@@ -44,9 +56,12 @@ param(
     [Parameter(Mandatory)] [string] $ProjectPath,
     [Parameter(Mandatory)] [string] $BuildDirName,
     [string] $FwVersion = '0.1.0',
-    [ValidateSet('wifi', 'web', 'ble-input', 'ble-scan', 'gol', 'clocks', 'palettes')]
+    [ValidateSet('wifi', 'web', 'gol', 'clocks', 'palettes')]
     [string[]] $Presets = @(),
-    [switch] $InitGit
+    [switch] $InitGit,
+    [string] $WorkspaceFile = 'C:\Users\egavi\OneDrive\Documents\PlatformIO\Projects\ESP32S3 WS.code-workspace',
+    [string] $WorkspaceFolderName = '',
+    [switch] $SkipWorkspaceRegister
 )
 
 # Avoid SupportsShouldProcess propagating -WhatIf to safe write cmdlets
@@ -91,7 +106,6 @@ $ManifestBase = @(
     'src\core\ScreenManager.h',
     'src\core\BootOrchestrator.h',
     'src\core\BootOrchestrator.cpp',
-    'src\core\WatchdogManager.h',
     'src\hal\Hal.h',
     'src\hal\DisplayHAL.h',
     'src\hal\DisplayHAL.cpp',
@@ -113,7 +127,7 @@ $ManifestBase = @(
 )
 
 $ManifestPresets = @{
-    'wifi'      = @(
+    'wifi'     = @(
         'src\services\NetService.h',
         'src\services\NetService.cpp',
         'src\services\TimeService.h',
@@ -121,27 +135,19 @@ $ManifestPresets = @{
         'src\services\GeoService.h',
         'src\services\GeoService.cpp'
     )
-    'web'       = @(
+    'web'      = @(
         'src\services\WebService.h',
         'src\services\WebService.cpp',
         'src\core\GOLConfig.h'
     )
-    'ble-input' = @(
-        'src\hal\InputHAL.h',
-        'src\hal\InputHAL.cpp',
-        'src\screens\ScreenGamepad.h'
-    )
-    'ble-scan'  = @(
-        'src\screens\ScreenBLEScan.h'
-    )
-    'gol'       = @(
+    'gol'      = @(
         'src\screens\ScreenGameOfLife.h'
     )
-    'clocks'    = @(
+    'clocks'   = @(
         'src\screens\ScreenAnalogClock.h',
         'src\screens\ScreenFlipClock.h'
     )
-    'palettes'  = @(
+    'palettes' = @(
         'src\screens\ScreenPalette.h',
         'src\core\PalettesData.h'
     )
@@ -214,7 +220,7 @@ foreach ($script in 'build.ps1', 'upload.ps1') {
     $sp = Join-Path $ProjectPath $script
     if (-not (Test-Path $sp)) { continue }
     $txt = Get-Content -Raw -LiteralPath $sp
-    $txt = $txt -replace 'TechTest_v2', $BuildDirName
+    $txt = $txt -replace 'ESP32S3-TFT_Framework', $BuildDirName
     Set-Content -LiteralPath $sp -Value $txt -NoNewline
 }
 
@@ -330,13 +336,11 @@ $skillsSrcRoot = Join-Path $SourceRoot '.github\skills'
 $skillsDstRoot = Join-Path $ghDir 'skills'
 
 # Always-applicable skills (any ESP32-S3 framework derivative benefits from them)
-$AlwaysSkills = @('git-workflow', 'build-pipeline', 'runtime-debug', 'iteration-close', 'tft-screen')
+$AlwaysSkills = @('git-workflow', 'build-pipeline', 'runtime-debug', 'iteration-close', 'tft-screen', 'ble-input')
 
 # Preset-conditional skills
 $PresetSkills = @{
-    'web'       = @('webservice-http')
-    'ble-input' = @('ble-input')
-    'ble-scan'  = @('ble-input')
+    'web' = @('webservice-http')
 }
 
 $skillsToCopy = New-Object System.Collections.Generic.List[string]
@@ -368,7 +372,7 @@ $skillsDescriptions = @{
     'iteration-close' = 'cerrar iteración, changelog, sync README'
     'tft-screen'      = 'crear/editar pantallas (IScreen + BaseSprite)'
     'webservice-http' = 'endpoints HTTP, restricciones TCP, GOLConfig'
-    'ble-input'       = 'Bluepad32 / BLE scan / dual stack'
+    'ble-input'       = 'guía de re-introducción BLE/HID (retirado en F1)'
 }
 foreach ($s in $skillsToCopy) {
     $desc = if ($skillsDescriptions.ContainsKey($s)) { $skillsDescriptions[$s] } else { '' }
@@ -416,6 +420,70 @@ Replace('{{DATE}}', (Get-Date -Format 'yyyy-MM-dd'))
 $readmeContent | Set-Content -LiteralPath (Join-Path $ProjectPath 'README.md') -Encoding UTF8
 
 # ---------------------------------------------------------------------------
+# Optional: register project in a multi-root .code-workspace file
+# ---------------------------------------------------------------------------
+if (-not $SkipWorkspaceRegister -and -not [string]::IsNullOrWhiteSpace($WorkspaceFile)) {
+    if (-not (Test-Path -LiteralPath $WorkspaceFile)) {
+        Write-Host "[scaffold] Workspace file not found, skipping registration: $WorkspaceFile" -ForegroundColor Yellow
+    }
+    else {
+        try {
+            $wsDir = Split-Path -Parent $WorkspaceFile
+            # Compute path relative to the workspace file directory
+            Push-Location $wsDir
+            try {
+                $relRaw = (Resolve-Path -LiteralPath $ProjectPath -Relative)
+            }
+            finally {
+                Pop-Location
+            }
+            # Strip leading .\ to match the style used in existing entries
+            $relPath = $relRaw -replace '^\.\\', '' -replace '^\./', ''
+
+            $folderName = if ([string]::IsNullOrWhiteSpace($WorkspaceFolderName)) { $ProjectName } else { $WorkspaceFolderName }
+
+            $rawJson = Get-Content -LiteralPath $WorkspaceFile -Raw -Encoding UTF8
+            $ws = $rawJson | ConvertFrom-Json
+
+            if (-not ($ws.PSObject.Properties.Name -contains 'folders') -or $null -eq $ws.folders) {
+                $ws | Add-Member -NotePropertyName 'folders' -NotePropertyValue @() -Force
+            }
+
+            $existing = @($ws.folders | Where-Object {
+                    $_.PSObject.Properties.Name -contains 'path' -and $_.path -eq $relPath
+                })
+
+            if ($existing.Count -gt 0) {
+                Write-Host "[scaffold] Workspace already contains '$relPath' — not modified." -ForegroundColor Yellow
+            }
+            else {
+                if ($PSCmdlet.ShouldProcess($WorkspaceFile, "Add folder '$relPath' as '$folderName'")) {
+                    $newEntry = [pscustomobject]@{
+                        name = $folderName
+                        path = $relPath
+                    }
+                    $ws.folders = @($ws.folders) + $newEntry
+
+                    # Backup
+                    $bak = "$WorkspaceFile.bak"
+                    Copy-Item -LiteralPath $WorkspaceFile -Destination $bak -Force
+
+                    $newJson = $ws | ConvertTo-Json -Depth 10
+                    # Write UTF-8 without BOM (VS Code prefers it)
+                    [System.IO.File]::WriteAllText($WorkspaceFile, $newJson, (New-Object System.Text.UTF8Encoding $false))
+                    Write-Host "[scaffold] Registered in workspace: $WorkspaceFile" -ForegroundColor Green
+                    Write-Host "           -> { name = '$folderName'; path = '$relPath' }" -ForegroundColor Green
+                    Write-Host "           Backup: $bak" -ForegroundColor DarkGray
+                }
+            }
+        }
+        catch {
+            Write-Host "[scaffold] WARN: failed to register in workspace file: $_" -ForegroundColor Yellow
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
 # Optional: git init
 # ---------------------------------------------------------------------------
 if ($InitGit) {
@@ -442,3 +510,6 @@ Write-Host "  1. cd `"$ProjectPath`""
 Write-Host "  2. cp src/core/Config_Template.h src/core/Config.h  (and fill credentials)"
 Write-Host "  3. ./build.ps1"
 Write-Host "  4. ./upload.ps1"
+if (-not $SkipWorkspaceRegister -and -not [string]::IsNullOrWhiteSpace($WorkspaceFile) -and (Test-Path -LiteralPath $WorkspaceFile)) {
+    Write-Host "  5. Reload the multi-root workspace in VS Code: $WorkspaceFile"
+}
